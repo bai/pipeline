@@ -237,6 +237,8 @@ func main() {
 
 	externalURLInsecure := viper.GetBool(config.PipelineExternalURLInsecure)
 
+	oidcIssuerURL := viper.GetString(config.OIDCIssuerURL)
+
 	workflowClient, err := config.CadenceClient()
 	if err != nil {
 		errorHandler.Handle(errors.WrapIf(err, "Failed to configure Cadence client"))
@@ -297,6 +299,7 @@ func main() {
 			workflowClient,
 			externalBaseURL,
 			externalURLInsecure,
+			oidcIssuerURL,
 		),
 	}
 	clusterDeleters := api.ClusterDeleters{
@@ -598,13 +601,13 @@ func main() {
 				clusterGetter,
 				clusterAuthService,
 				viper.GetString("auth.tokensigningkey"),
-				viper.GetString("auth.dexURL"),
-				viper.GetBool("auth.dexInsecure"),
+				oidcIssuerURL,
+				viper.GetBool(config.OIDCIssuerInsecure),
 				pipelineExternalURL.String(),
 			)
 			emperror.Panic(errors.WrapIf(err, "failed to create ClusterAuthAPI"))
 
-			clusterAuthAPI.RegisterRoutes(pkeGroup, router)
+			clusterAuthAPI.RegisterRoutes(cRouter, router)
 
 			orgs.GET("/:orgid/helm/repos", api.HelmReposGet)
 			orgs.POST("/:orgid/helm/repos", api.HelmReposAdd)
