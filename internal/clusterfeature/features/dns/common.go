@@ -1,4 +1,4 @@
-// Copyright © 2018 Banzai Cloud
+// Copyright © 2019 Banzai Cloud
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,16 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package defaults
+package dns
 
-type AmazonNodePoolProfileBaseFields struct {
-	ID           uint   `gorm:"primary_key"`
-	InstanceType string `gorm:"default:'m4.xlarge'"`
-	Name         string `gorm:"unique_index:idx_amazon_name_node_name"`
-	NodeName     string `gorm:"unique_index:idx_amazon_name_node_name"`
-	SpotPrice    string
-	Autoscaling  bool `gorm:"default:false"`
-	MinCount     int  `gorm:"default:1"`
-	MaxCount     int  `gorm:"default:2"`
-	Count        int  `gorm:"default:1"`
-}
+const FeatureName = "dns"

@@ -31,16 +31,17 @@ import (
 	"golang.org/x/oauth2"
 )
 
-// DexProvider provide login with dex method
-type DexProvider struct {
-	*DexConfig
+// OIDCProvider provide login with OIDC auth method
+type OIDCProvider struct {
+	*OIDCConfig
 	provider *oidc.Provider
+	verifier *oidc.IDTokenVerifier
 }
 
 type AuthorizeHandler func(*auth.Context) (*claims.Claims, error)
 
-// DexConfig is the dex Config
-type DexConfig struct {
+// OIDCConfig holds the oidc configuration parameters
+type OIDCConfig struct {
 	PublicClientID     string
 	ClientID           string
 	ClientSecret       string
@@ -51,27 +52,36 @@ type DexConfig struct {
 	AuthorizeHandler   AuthorizeHandler
 }
 
-func newDexProvider(config *DexConfig) *DexProvider {
+type IDTokenClaims struct {
+	Subject         string            `json:"sub"`
+	Name            string            `json:"name"`
+	Email           string            `json:"email"`
+	Verified        bool              `json:"email_verified"`
+	Groups          []string          `json:"groups"`
+	FederatedClaims map[string]string `json:"federated_claims"`
+}
+
+func newOIDCProvider(config *OIDCConfig) *OIDCProvider {
 	if config == nil {
-		config = &DexConfig{}
+		config = &OIDCConfig{}
 	}
 
-	provider := &DexProvider{DexConfig: config}
+	provider := &OIDCProvider{OIDCConfig: config}
 
 	if config.ClientID == "" {
-		panic(errors.New("Dex's ClientID can't be blank"))
+		panic(errors.New("OIDC's ClientID can't be blank"))
 	}
 
 	if config.ClientSecret == "" {
-		panic(errors.New("Dex's ClientSecret can't be blank"))
+		panic(errors.New("OIDC's ClientSecret can't be blank"))
 	}
 
 	if config.IssuerURL == "" {
-		panic(errors.New("Dex's IssuerURL can't be blank"))
+		panic(errors.New("OIDC's IssuerURL can't be blank"))
 	}
 
 	if config.Scopes == nil {
-		config.Scopes = []string{oidc.ScopeOpenID, "profile", "email", "groups", "federated:id"}
+		config.Scopes = []string{oidc.ScopeOpenID, "profile", "email", "groups", "federated:id", oidc.ScopeOfflineAccess}
 	}
 
 	httpClient := http.Client{
@@ -83,12 +93,13 @@ func newDexProvider(config *DexConfig) *DexProvider {
 		},
 	}
 	ctx := oidc.ClientContext(gocontext.Background(), &httpClient)
-	dexProvider, err := oidc.NewProvider(ctx, provider.IssuerURL)
+	oidcProvider, err := oidc.NewProvider(ctx, provider.IssuerURL)
 	if err != nil {
 		panic(fmt.Errorf("Failed to query provider %q: %s", provider.IssuerURL, err.Error()))
 	}
 
-	provider.provider = dexProvider
+	provider.provider = oidcProvider
+	provider.verifier = oidcProvider.Verifier(&oidc.Config{ClientID: config.ClientID})
 
 	if config.AuthorizeHandler == nil {
 
@@ -105,8 +116,7 @@ func newDexProvider(config *DexConfig) *DexProvider {
 				ok           bool
 			)
 
-			verifier := dexProvider.Verifier(&oidc.Config{ClientID: config.ClientID})
-
+			verifier := provider.verifier
 			ctx := oidc.ClientContext(req.Context(), &httpClient)
 			oauth2Config := provider.OAuthConfig(context)
 
@@ -161,7 +171,7 @@ func newDexProvider(config *DexConfig) *DexProvider {
 				rawIDToken = req.FormValue("id_token")
 				if rawIDToken != "" {
 					// The public CLI client's verifier is needed in this case
-					verifier = dexProvider.Verifier(&oidc.Config{ClientID: config.PublicClientID})
+					verifier = oidcProvider.Verifier(&oidc.Config{ClientID: config.PublicClientID})
 
 				} else {
 					// Form request from frontend to refresh a token.
@@ -199,15 +209,7 @@ func newDexProvider(config *DexConfig) *DexProvider {
 				return nil, err
 			}
 
-			var claims struct {
-				Subject         string            `json:"sub"`
-				Name            string            `json:"name"`
-				Email           string            `json:"email"`
-				Verified        bool              `json:"email_verified"`
-				Groups          []string          `json:"groups"`
-				FederatedClaims map[string]string `json:"federated_claims"`
-			}
-
+			var claims IDTokenClaims
 			err = idToken.Claims(&claims)
 			if err != nil {
 				err = fmt.Errorf("failed to parse claims: %s", err.Error())
@@ -227,7 +229,8 @@ func newDexProvider(config *DexConfig) *DexProvider {
 			authInfo.UID = claims.Subject
 
 			if !tx.Model(authIdentity).Where(authInfo).Scan(&authInfo).RecordNotFound() {
-				return authInfo.ToClaims(), nil
+				claims := authInfo.ToClaims()
+				return claims, SaveOAuthRefreshToken(claims.UserID, token.RefreshToken)
 			}
 
 			// Create a new account otherwise
@@ -238,7 +241,7 @@ func newDexProvider(config *DexConfig) *DexProvider {
 				schema.UID = claims.Subject
 				schema.Name = claims.Name
 				schema.Email = claims.Email
-				schema.RawInfo = claims
+				schema.RawInfo = &claims
 			}
 			if _, userID, err := context.Auth.UserStorer.Save(&schema, context); err == nil {
 				if userID != "" {
@@ -249,7 +252,8 @@ func newDexProvider(config *DexConfig) *DexProvider {
 			}
 
 			if err = tx.Where(authInfo).FirstOrCreate(authIdentity).Error; err == nil {
-				return authInfo.ToClaims(), nil
+				claims := authInfo.ToClaims()
+				return claims, SaveOAuthRefreshToken(claims.UserID, token.RefreshToken)
 			}
 
 			return nil, err
@@ -260,18 +264,18 @@ func newDexProvider(config *DexConfig) *DexProvider {
 }
 
 // GetName return provider name
-func (DexProvider) GetName() string {
+func (OIDCProvider) GetName() string {
 	return "dex"
 }
 
 // ConfigAuth config auth
-func (provider DexProvider) ConfigAuth(*auth.Auth) {
+func (provider OIDCProvider) ConfigAuth(*auth.Auth) {
 }
 
 // OAuthConfig return oauth config based on configuration
-func (provider DexProvider) OAuthConfig(context *auth.Context) *oauth2.Config {
+func (provider OIDCProvider) OAuthConfig(context *auth.Context) *oauth2.Config {
 	var (
-		config = provider.DexConfig
+		config = provider.OIDCConfig
 		req    = context.Request
 		scheme = req.URL.Scheme
 	)
@@ -294,7 +298,7 @@ func (provider DexProvider) OAuthConfig(context *auth.Context) *oauth2.Config {
 }
 
 // Login implemented login with dex provider
-func (provider DexProvider) Login(context *auth.Context) {
+func (provider OIDCProvider) Login(context *auth.Context) {
 	claims := claims.Claims{}
 	claims.Subject = "state"
 	signedToken := context.Auth.SessionStorer.SignedToken(&claims)
@@ -303,25 +307,52 @@ func (provider DexProvider) Login(context *auth.Context) {
 	http.Redirect(context.Writer, context.Request, url, http.StatusFound)
 }
 
+// RedeemRefreshToken plays an OAuth redeem refresh token flow
+// https://www.oauth.com/oauth2-servers/access-tokens/refreshing-access-tokens/
+func (provider OIDCProvider) RedeemRefreshToken(context *auth.Context, refreshToken string) (*IDTokenClaims, *oauth2.Token, error) {
+	token, err := provider.OAuthConfig(context).TokenSource(gocontext.Background(), &oauth2.Token{RefreshToken: refreshToken}).Token()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	rawIDToken, ok := token.Extra("id_token").(string)
+	if !ok {
+		return nil, nil, fmt.Errorf("no id_token in token response")
+	}
+
+	var claims IDTokenClaims
+	idToken, err := provider.verifier.Verify(gocontext.Background(), rawIDToken)
+	if err != nil {
+		return nil, nil, fmt.Errorf("Failed to verify ID token: %s", err.Error())
+	}
+
+	err = idToken.Claims(&claims)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to parse claims: %s", err.Error())
+	}
+
+	return &claims, token, nil
+}
+
 // Logout implemented logout with dex provider
-func (DexProvider) Logout(context *auth.Context) {
+func (OIDCProvider) Logout(context *auth.Context) {
 }
 
 // Register implemented register with dex provider
-func (provider DexProvider) Register(context *auth.Context) {
+func (provider OIDCProvider) Register(context *auth.Context) {
 	provider.Login(context)
 }
 
 // Deregister implemented deregister with dex provider
-func (provider DexProvider) Deregister(context *auth.Context) {
+func (provider OIDCProvider) Deregister(context *auth.Context) {
 	context.Auth.DeregisterHandler(context)
 }
 
 // Callback implement Callback with dex provider
-func (provider DexProvider) Callback(context *auth.Context) {
+func (provider OIDCProvider) Callback(context *auth.Context) {
 	context.Auth.LoginHandler(context, provider.AuthorizeHandler)
 }
 
 // ServeHTTP implement ServeHTTP with dex provider
-func (DexProvider) ServeHTTP(*auth.Context) {
+func (OIDCProvider) ServeHTTP(*auth.Context) {
 }

@@ -72,8 +72,6 @@ import (
 	"github.com/banzaicloud/pipeline/internal/dashboard"
 	"github.com/banzaicloud/pipeline/internal/federation"
 	"github.com/banzaicloud/pipeline/internal/global"
-	"github.com/banzaicloud/pipeline/internal/helm"
-	"github.com/banzaicloud/pipeline/internal/helm/helmadapter"
 	cgFeatureIstio "github.com/banzaicloud/pipeline/internal/istio/istiofeature"
 	"github.com/banzaicloud/pipeline/internal/monitor"
 	"github.com/banzaicloud/pipeline/internal/notification"
@@ -164,14 +162,12 @@ func main() {
 	basePath := viper.GetString("pipeline.basepath")
 
 	enforcer := intAuth.NewEnforcer(db)
-	accessManager := intAuth.NewAccessManager(enforcer, basePath)
-	accessManager.AddDefaultPolicies()
 
-	orgImporter := auth.NewOrgImporter(db, accessManager, config.EventBus)
-	tokenHandler := auth.NewTokenHandler(accessManager)
+	orgImporter := auth.NewOrgImporter(db, config.EventBus)
+	tokenHandler := auth.NewTokenHandler()
 
 	// Initialize auth
-	auth.Init(cicdDB, accessManager, orgImporter)
+	auth.Init(cicdDB, orgImporter)
 
 	if viper.GetBool(config.DBAutoMigrateEnabled) {
 		logger.Info("running automatic schema migrations")
@@ -237,6 +233,8 @@ func main() {
 
 	externalURLInsecure := viper.GetBool(config.PipelineExternalURLInsecure)
 
+	oidcIssuerURL := viper.GetString(config.OIDCIssuerURL)
+
 	workflowClient, err := config.CadenceClient()
 	if err != nil {
 		errorHandler.Handle(errors.WrapIf(err, "Failed to configure Cadence client"))
@@ -297,6 +295,7 @@ func main() {
 			workflowClient,
 			externalBaseURL,
 			externalURLInsecure,
+			oidcIssuerURL,
 		),
 	}
 	clusterDeleters := api.ClusterDeleters{
@@ -394,7 +393,7 @@ func main() {
 
 	domainAPI := api.NewDomainAPI(clusterManager, logrusLogger, errorHandler)
 	organizationAPI := api.NewOrganizationAPI(orgImporter)
-	userAPI := api.NewUserAPI(accessManager, db, logrusLogger, errorHandler)
+	userAPI := api.NewUserAPI(db, logrusLogger, errorHandler)
 	networkAPI := api.NewNetworkAPI(logrusLogger)
 
 	switch viper.GetString(config.DNSBaseDomain) {
@@ -542,20 +541,17 @@ func main() {
 				clustersecretadapter.NewSecretStore(secret.Store),
 			)
 
-			// ClusterInfo Feature API
+			// Cluster Feature API
 			{
 				logger := commonadapter.NewLogger(logger) // TODO: make this a context aware logger
 				featureRepository := clusterfeatureadapter.NewGormFeatureRepository(db, logger)
-				helmService := helm.NewHelmService(helmadapter.NewClusterService(clusterManager), logger)
-				secretStore := commonadapter.NewSecretStore(secret.Store, commonadapter.OrgIDContextExtractorFunc(auth.GetCurrentOrganizationID))
-				clusterService := clusterfeatureadapter.NewClusterService(clusterManager)
-				orgDomainService := featureDns.NewOrgDomainService(clusterManager, dnsSvc, logger)
-				dnsFeatureManager := featureDns.NewDnsFeatureManager(featureRepository, secretStore, clusterService, clusterManager, helmService, orgDomainService, logger)
-				featureRegistry := clusterfeature.NewFeatureRegistry(map[string]clusterfeature.FeatureManager{
-					dnsFeatureManager.Name(): clusterfeatureadapter.NewAsyncFeatureManagerStub(dnsFeatureManager, featureRepository, workflowClient, logger),
+				clusterGetter := clusterfeatureadapter.MakeClusterGetter(clusterManager)
+				orgDomainService := featureDns.NewOrgDomainService(clusterGetter, dnsSvc, logger)
+				featureManagerRegistry := clusterfeature.MakeFeatureManagerRegistry([]clusterfeature.FeatureManager{
+					featureDns.MakeFeatureManager(clusterGetter, logger, orgDomainService),
 				})
-
-				service := clusterfeature.NewFeatureService(featureRegistry, featureRepository, logger)
+				featureOperationDispatcher := clusterfeatureadapter.MakeCadenceFeatureOperationDispatcher(workflowClient, logger)
+				service := clusterfeature.MakeFeatureService(featureOperationDispatcher, featureManagerRegistry, featureRepository, logger)
 				endpoints := clusterfeaturedriver.MakeEndpoints(service)
 				handlers := clusterfeaturedriver.MakeHTTPHandlers(endpoints, errorHandler)
 
@@ -598,13 +594,13 @@ func main() {
 				clusterGetter,
 				clusterAuthService,
 				viper.GetString("auth.tokensigningkey"),
-				viper.GetString("auth.dexURL"),
-				viper.GetBool("auth.dexInsecure"),
+				oidcIssuerURL,
+				viper.GetBool(config.OIDCIssuerInsecure),
 				pipelineExternalURL.String(),
 			)
 			emperror.Panic(errors.WrapIf(err, "failed to create ClusterAuthAPI"))
 
-			clusterAuthAPI.RegisterRoutes(pkeGroup, router)
+			clusterAuthAPI.RegisterRoutes(cRouter, router)
 
 			orgs.GET("/:orgid/helm/repos", api.HelmReposGet)
 			orgs.POST("/:orgid/helm/repos", api.HelmReposAdd)
@@ -624,8 +620,6 @@ func main() {
 			orgs.DELETE("/:orgid/secrets/:id/tags/*tag", api.DeleteSecretTag)
 			orgs.GET("/:orgid/users", userAPI.GetUsers)
 			orgs.GET("/:orgid/users/:id", userAPI.GetUsers)
-			orgs.POST("/:orgid/users/:id", userAPI.AddUser)
-			orgs.DELETE("/:orgid/users/:id", userAPI.RemoveUser)
 
 			orgs.GET("/:orgid/buckets", api.ListAllBuckets)
 			orgs.POST("/:orgid/buckets", api.CreateBucket)
