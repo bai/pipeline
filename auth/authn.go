@@ -164,7 +164,7 @@ func (redirector) Redirect(w http.ResponseWriter, req *http.Request, action stri
 }
 
 // Init initializes the auth
-func Init(db *gorm.DB, orgImporter *OrgImporter) {
+func Init(db *gorm.DB, orgSyncer OIDCOrganizationSyncer) {
 	JwtIssuer = viper.GetString("auth.jwtissuer")
 	JwtAudience = viper.GetString("auth.jwtaudience")
 	CookieDomain = viper.GetString("auth.cookieDomain")
@@ -215,8 +215,7 @@ func Init(db *gorm.DB, orgImporter *OrgImporter) {
 		UserStorer: BanzaiUserStorer{
 			signingKeyBase32: signingKeyBase32,
 			cicdDB:           cicdDB,
-			events:           ebAuthEvents{eb: config.EventBus},
-			orgImporter:      orgImporter,
+			orgSyncer:        orgSyncer,
 		},
 		LoginHandler:      banzaiLoginHandler,
 		LogoutHandler:     banzaiLogoutHandler,
@@ -238,7 +237,7 @@ func Init(db *gorm.DB, orgImporter *OrgImporter) {
 	Handler = bauth.JWTAuth(TokenStore, signingKey, claimConverter, cookieExtractor{sessionStorer})
 }
 
-func SyncOrgsForUser(orgImporter *OrgImporter, user *User, request *http.Request) error {
+func SyncOrgsForUser(organizationSyncer OIDCOrganizationSyncer, user *User, request *http.Request) error {
 	refreshToken, err := GetOAuthRefreshToken(user.IDString())
 	if err != nil {
 		return emperror.Wrap(err, "failed to fetch refresh token from Vault")
@@ -259,12 +258,7 @@ func SyncOrgsForUser(orgImporter *OrgImporter, user *User, request *http.Request
 		return emperror.Wrap(err, "failed to save user refresh token")
 	}
 
-	organizations, err := getOrganizationsFromIDToken(idTokenClaims)
-	if err != nil {
-		return emperror.Wrap(err, "failed to get organizations from id token")
-	}
-
-	return orgImporter.ImportOrganizationsFromDex(user, organizations, idTokenClaims.FederatedClaims["connector_id"])
+	return organizationSyncer.SyncOrganizations(request.Context(), *user, idTokenClaims)
 }
 
 func InitTokenStore() {
@@ -621,31 +615,7 @@ func (h *banzaiDeregisterHandler) handler(context *auth.Context) {
 
 	db := context.GetDB(context.Request)
 
-	userAdminOrganizations := []UserOrganization{}
-
-	// Query the organizations where the only admin is the current user.
-	sql :=
-		`SELECT * FROM user_organizations WHERE role = ? AND organization_id IN
-		(SELECT DISTINCT organization_id FROM user_organizations WHERE user_id = ? AND role = ?)
-		GROUP BY user_id, organization_id
-		HAVING COUNT(*) = 1`
-
-	if err := db.Raw(sql, "admin", user.ID, "admin").Scan(&userAdminOrganizations).Error; err != nil {
-		errorHandler.Handle(errors.Wrap(err, "failed select user only owned organizations"))
-		http.Error(context.Writer, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	// If there are any organizations with only this user as admin, throw an error
-	if len(userAdminOrganizations) != 0 {
-		orgs := []string{}
-		for _, org := range userAdminOrganizations {
-			orgs = append(orgs, fmt.Sprint(org.OrganizationID))
-		}
-		http.Error(context.Writer, "You must remove yourself or transfer ownership or delete these organizations before you can delete your user: "+strings.Join(orgs, ", "), http.StatusBadRequest)
-		return
-	}
-
+	// Remove organization memberships
 	if err := db.Model(user).Association("Organizations").Clear().Error; err != nil {
 		errorHandler.Handle(errors.Wrap(err, "failed delete user's organization associations"))
 		http.Error(context.Writer, err.Error(), http.StatusInternalServerError)

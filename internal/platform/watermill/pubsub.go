@@ -1,4 +1,4 @@
-// Copyright © 2018 Banzai Cloud
+// Copyright © 2019 Banzai Cloud
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,12 +12,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package config
+package watermill
 
 import (
-	evbus "github.com/asaskevich/EventBus"
+	"github.com/ThreeDotsLabs/watermill/message"
+	"github.com/ThreeDotsLabs/watermill/pubsub/gochannel"
+	watermilllog "logur.dev/integration/watermill"
+	"logur.dev/logur"
 )
 
-// EventBus is the global EventBus dispatcher object
-// nolint: gochecknoglobals
-var EventBus = evbus.New()
+// NewPubSub returns a new PubSub.
+func NewPubSub(logger logur.Logger) (message.Publisher, message.Subscriber) {
+	pubsub := gochannel.NewGoChannel(
+		gochannel.Config{},
+		watermilllog.New(logur.WithFields(logger, map[string]interface{}{"component": "watermill"})),
+	)
+
+	return pubsub, pubsub
+}

@@ -24,6 +24,9 @@ import (
 
 	"emperror.dev/emperror"
 	"emperror.dev/errors"
+	"github.com/ThreeDotsLabs/watermill/components/cqrs"
+	"github.com/ThreeDotsLabs/watermill/message"
+	watermillMiddleware "github.com/ThreeDotsLabs/watermill/message/router/middleware"
 	evbus "github.com/asaskevich/EventBus"
 	ginprometheus "github.com/banzaicloud/go-gin-prometheus"
 	"github.com/gin-contrib/cors"
@@ -47,6 +50,7 @@ import (
 	"github.com/banzaicloud/pipeline/api/common"
 	"github.com/banzaicloud/pipeline/api/middleware"
 	"github.com/banzaicloud/pipeline/auth"
+	"github.com/banzaicloud/pipeline/auth/authadapter"
 	"github.com/banzaicloud/pipeline/cluster"
 	"github.com/banzaicloud/pipeline/config"
 	"github.com/banzaicloud/pipeline/dns"
@@ -83,9 +87,11 @@ import (
 	ginutils "github.com/banzaicloud/pipeline/internal/platform/gin/utils"
 	"github.com/banzaicloud/pipeline/internal/platform/log"
 	platformlog "github.com/banzaicloud/pipeline/internal/platform/log"
+	"github.com/banzaicloud/pipeline/internal/platform/watermill"
 	azurePKEAdapter "github.com/banzaicloud/pipeline/internal/providers/azure/pke/adapter"
 	azurePKEDriver "github.com/banzaicloud/pipeline/internal/providers/azure/pke/driver"
 	anchore "github.com/banzaicloud/pipeline/internal/security"
+	"github.com/banzaicloud/pipeline/pkg/correlation"
 	"github.com/banzaicloud/pipeline/pkg/ctxutil"
 	"github.com/banzaicloud/pipeline/pkg/k8sclient"
 	"github.com/banzaicloud/pipeline/pkg/providers"
@@ -163,11 +169,42 @@ func main() {
 
 	enforcer := intAuth.NewEnforcer(db)
 
-	orgImporter := auth.NewOrgImporter(db, config.EventBus)
+	publisher, subscriber := watermill.NewPubSub(logger)
+	defer publisher.Close()
+	defer subscriber.Close()
+
+	publisher, _ = message.MessageTransformPublisherDecorator(func(msg *message.Message) {
+		if cid, ok := correlation.ID(msg.Context()); ok {
+			watermillMiddleware.SetCorrelationID(cid, msg)
+		}
+	})(publisher)
+
+	subscriber, _ = message.MessageTransformSubscriberDecorator(func(msg *message.Message) {
+		if cid := watermillMiddleware.MessageCorrelationID(msg); cid != "" {
+			msg.SetContext(correlation.WithID(msg.Context(), cid))
+		}
+	})(subscriber)
+
+	// Used internally to make sure every event/command bus uses the same one
+	eventMarshaler := cqrs.JSONMarshaler{GenerateName: cqrs.StructName}
+
 	tokenHandler := auth.NewTokenHandler()
 
+	const organizationTopic = "organization"
+	var organizationSyncer auth.OIDCOrganizationSyncer
+	{
+		eventBus, _ := cqrs.NewEventBus(
+			publisher,
+			func(eventName string) string { return organizationTopic },
+			eventMarshaler,
+		)
+		store := authadapter.NewGormOrganizationStore(db)
+		eventDispatcher := authadapter.NewOrganizationEventDispatcher(eventBus)
+		organizationSyncer = auth.NewOIDCOrganizationSyncer(auth.NewOrganizationSyncer(store, eventDispatcher))
+	}
+
 	// Initialize auth
-	auth.Init(cicdDB, orgImporter)
+	auth.Init(cicdDB, organizationSyncer)
 
 	if viper.GetBool(config.DBAutoMigrateEnabled) {
 		logger.Info("running automatic schema migrations")
@@ -392,7 +429,7 @@ func main() {
 	}
 
 	domainAPI := api.NewDomainAPI(clusterManager, logrusLogger, errorHandler)
-	organizationAPI := api.NewOrganizationAPI(orgImporter)
+	organizationAPI := api.NewOrganizationAPI(organizationSyncer)
 	userAPI := api.NewUserAPI(db, logrusLogger, errorHandler)
 	networkAPI := api.NewNetworkAPI(logrusLogger)
 
@@ -433,18 +470,6 @@ func main() {
 		sharedSpotguideOrg,
 		spotguidePlatformData,
 	)
-
-	// subscribe to organization creations and sync spotguides into the newly created organizations
-	spotguide.AuthEventEmitter.NotifyOrganizationRegistered(func(orgID uint, userID uint) {
-		if err := spotguideManager.ScrapeSpotguides(orgID, userID); err != nil {
-			logger.Warn(
-				errors.WithMessage(err, "failed to scrape Spotguide repositories").Error(),
-				map[string]interface{}{
-					"organizationId": orgID,
-				},
-			)
-		}
-	})
 
 	// periodically sync shared spotguides
 	if err := spotguide.ScheduleScrapingSharedSpotguides(workflowClient); err != nil {
