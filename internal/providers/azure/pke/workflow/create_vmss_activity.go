@@ -21,7 +21,7 @@ import (
 	"strings"
 	"text/template"
 
-	"emperror.dev/emperror"
+	"emperror.dev/errors"
 	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2018-10-01/compute"
 	"github.com/Azure/go-autorest/autorest/to"
 	"go.uber.org/cadence/activity"
@@ -63,7 +63,7 @@ type VirtualMachineScaleSet struct {
 	InstanceCount           int64
 	InstanceType            string
 	LBBackendAddressPoolIDs []string
-	LBInboundNATPoolID      string
+	LBInboundNATPoolIDs     []string
 	Location                string
 	Name                    string
 	NetworkSecurityGroupID  string
@@ -116,12 +116,12 @@ func (a CreateVMSSActivity) Execute(ctx context.Context, input CreateVMSSActivit
 
 	var userDataScript strings.Builder
 	err = userDataScriptTemplate.Execute(&userDataScript, input.ScaleSet.UserDataScriptParams)
-	if err = emperror.Wrap(err, "failed to execute user data script template"); err != nil {
+	if err = errors.WrapIf(err, "failed to execute user data script template"); err != nil {
 		return
 	}
 
 	cc, err := a.azureClientFactory.New(input.OrganizationID, input.SecretID)
-	if err = emperror.Wrap(err, "failed to create cloud connection"); err != nil {
+	if err = errors.WrapIf(err, "failed to create cloud connection"); err != nil {
 		return
 	}
 
@@ -132,19 +132,19 @@ func (a CreateVMSSActivity) Execute(ctx context.Context, input CreateVMSSActivit
 	logger.Debug("sending request to create or update virtual machine scale set")
 
 	future, err := client.CreateOrUpdate(ctx, input.ResourceGroupName, input.ScaleSet.Name, params)
-	if err = emperror.WrapWith(err, "sending request to create or update virtual machine scale set failed", keyvals...); err != nil {
+	if err = errors.WrapIfWithDetails(err, "sending request to create or update virtual machine scale set failed", keyvals...); err != nil {
 		return
 	}
 
 	logger.Debug("waiting for the completion of create or update virtual machine scale set operation")
 
 	err = future.WaitForCompletionRef(ctx, client.Client)
-	if err = emperror.WrapWith(err, "waiting for the completion of create or update virtual machine scale set operation failed", keyvals...); err != nil {
+	if err = errors.WrapIfWithDetails(err, "waiting for the completion of create or update virtual machine scale set operation failed", keyvals...); err != nil {
 		return
 	}
 
 	vmss, err := future.Result(client.VirtualMachineScaleSetsClient)
-	if err = emperror.WrapWith(err, "getting virtual machine scale set create or update result failed", keyvals...); err != nil {
+	if err = errors.WrapIfWithDetails(err, "getting virtual machine scale set create or update result failed", keyvals...); err != nil {
 		return
 	}
 
@@ -167,12 +167,15 @@ func (input CreateVMSSActivityInput) getCreateOrUpdateVirtualMachineScaleSetPara
 			}
 		}
 	}
-	var inpRefs *[]compute.SubResource
-	if input.ScaleSet.LBInboundNATPoolID != "" {
-		inpRefs = &[]compute.SubResource{
-			{
-				ID: to.StringPtr(input.ScaleSet.LBInboundNATPoolID),
-			},
+	var inpRefs []compute.SubResource
+	if input.ScaleSet.LBInboundNATPoolIDs != nil {
+		for _, id := range input.ScaleSet.LBInboundNATPoolIDs {
+			if id != "" {
+				inpRef := compute.SubResource{
+					ID: to.StringPtr(id),
+				}
+				inpRefs = append(inpRefs, inpRef)
+			}
 		}
 	}
 	var nsgRef *compute.SubResource
@@ -213,7 +216,7 @@ func (input CreateVMSSActivityInput) getCreateOrUpdateVirtualMachineScaleSetPara
 										VirtualMachineScaleSetIPConfigurationProperties: &compute.VirtualMachineScaleSetIPConfigurationProperties{
 											Primary:                         to.BoolPtr(true),
 											LoadBalancerBackendAddressPools: &bapRefs,
-											LoadBalancerInboundNatPools:     inpRefs,
+											LoadBalancerInboundNatPools:     &inpRefs,
 											Subnet: &compute.APIEntityReference{
 												ID: to.StringPtr(input.ScaleSet.SubnetID),
 											},

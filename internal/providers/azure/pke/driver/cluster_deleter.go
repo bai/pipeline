@@ -19,7 +19,7 @@ import (
 	"net/http"
 	"time"
 
-	"emperror.dev/emperror"
+	"emperror.dev/errors"
 	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2018-10-01/network"
 	"github.com/Azure/go-autorest/autorest/azure"
 	"github.com/Azure/go-autorest/autorest/to"
@@ -79,11 +79,59 @@ type KubeProxyCache interface {
 
 func (cd AzurePKEClusterDeleter) Delete(ctx context.Context, cluster pke.PKEOnAzureCluster, forced bool) error {
 	logger := cd.logger.WithField("clusterName", cluster.Name).WithField("clusterID", cluster.ID).WithField("forced", forced)
-	logger.Info("Deleting cluster")
+	logger.Info("deleting cluster")
 
-	pipNames, err := collectPublicIPAddressNames(ctx, logger, cd.secrets, cluster, forced)
-	if err != nil {
-		return emperror.Wrap(err, "failed to collect public IP address resource names")
+	sir, err := cd.secrets.Get(cluster.OrganizationID, cluster.SecretID)
+	if err = errors.WrapIf(err, "failed to get cluster secret from secret store"); err != nil {
+		if forced {
+			cd.logger.Error(err)
+		} else {
+			return err
+		}
+	}
+
+	var loadBalancers []network.LoadBalancer
+	var lbClient *pkgAzure.LoadBalancersClient
+	var pipClient *pkgAzure.PublicIPAddressesClient
+
+	if sir != nil {
+		conn, err := pkgAzure.NewCloudConnection(&azure.PublicCloud, pkgAzure.NewCredentials(sir.Values))
+		if err = errors.WrapIf(err, "failed to create cloud connection"); err != nil {
+			if forced {
+				cd.logger.Error(err)
+			} else {
+				return err
+			}
+		} else {
+			lbClient = conn.GetLoadBalancersClient()
+			pipClient = conn.GetPublicIPAddressesClient()
+		}
+
+		loadBalancers, err = collectClusterLoadBalancers(ctx, lbClient, cluster)
+		if err = errors.Wrap(err, "couldn't list the load balancers used by the cluster"); err != nil {
+			if forced {
+				cd.logger.Error(err)
+			} else {
+				return err
+			}
+		}
+	}
+
+	pipNames, err := collectPublicIPAddressNames(ctx, logger, pipClient, cd.secrets, loadBalancers, cluster, forced)
+	if err = errors.WrapIf(err, "failed to collect public IP address resource names"); err != nil {
+		if forced {
+			cd.logger.Error(err)
+		} else {
+			return err
+		}
+	}
+
+	// delete only owned Load Balancers
+	var loadBalancerNames []string
+	for _, lb := range loadBalancers {
+		if workflow.HasOwnedTag(cluster.Name, to.StringMap(lb.Tags)) {
+			loadBalancerNames = append(loadBalancerNames, to.String(lb.Name))
+		}
 	}
 
 	input := workflow.DeleteClusterWorkflowInput{
@@ -94,7 +142,7 @@ func (cd AzurePKEClusterDeleter) Delete(ctx context.Context, cluster pke.PKEOnAz
 		ClusterUID:           cluster.UID,
 		K8sSecretID:          cluster.K8sSecretID,
 		ResourceGroupName:    cluster.ResourceGroup.Name,
-		LoadBalancerName:     cluster.Name, // must be the same as the value passed to pke install master --kubernetes-cluster-name
+		LoadBalancerNames:    loadBalancerNames,
 		PublicIPAddressNames: pipNames,
 		RouteTableName:       pke.GetRouteTableName(cluster.Name),
 		ScaleSetNames:        getVMSSNames(cluster),
@@ -117,11 +165,11 @@ func (cd AzurePKEClusterDeleter) Delete(ctx context.Context, cluster pke.PKEOnAz
 	}
 
 	if err := cd.store.SetStatus(cluster.ID, pkgCluster.Deleting, pkgCluster.DeletingMessage); err != nil {
-		return emperror.Wrap(err, "failed to set cluster status")
+		return errors.WrapIf(err, "failed to set cluster status")
 	}
 
 	timer, err := cd.getClusterStatusChangeDurationTimer(cluster)
-	if err = emperror.Wrap(err, "failed to start status change duration metric timer"); err != nil {
+	if err = errors.WrapIf(err, "failed to start status change duration metric timer"); err != nil {
 		if forced {
 			cd.logger.Error(err)
 			timer = metrics.NoopDurationMetricTimer{}
@@ -131,7 +179,7 @@ func (cd AzurePKEClusterDeleter) Delete(ctx context.Context, cluster pke.PKEOnAz
 	}
 
 	wfrun, err := cd.workflowClient.ExecuteWorkflow(ctx, workflowOptions, workflow.DeleteClusterWorkflowName, input)
-	if err = emperror.WrapWith(err, "failed to start cluster deletion workflow", "cluster", cluster.Name); err != nil {
+	if err = errors.WrapIfWithDetails(err, "failed to start cluster deletion workflow", "cluster", cluster.Name); err != nil {
 		_ = cd.store.SetStatus(cluster.ID, pkgCluster.Error, err.Error())
 		return err
 	}
@@ -151,7 +199,7 @@ func (cd AzurePKEClusterDeleter) Delete(ctx context.Context, cluster pke.PKEOnAz
 	}()
 
 	if err = cd.store.SetActiveWorkflowID(cluster.ID, wfrun.GetID()); err != nil {
-		return emperror.WrapWith(err, "failed to set active workflow ID for cluster", "cluster", cluster.Name, "workflowID", wfrun.GetID())
+		return errors.WrapIfWithDetails(err, "failed to set active workflow ID for cluster", "cluster", cluster.Name, "workflowID", wfrun.GetID())
 	}
 
 	return nil
@@ -166,7 +214,7 @@ func (cd AzurePKEClusterDeleter) getClusterStatusChangeDurationTimer(cluster pke
 	if viper.GetBool(config.MetricsDebug) {
 		org, err := auth.GetOrganizationById(cluster.OrganizationID)
 		if err != nil {
-			return nil, emperror.Wrap(err, "Error during getting organization.")
+			return nil, errors.WrapIf(err, "Error during getting organization.")
 		}
 		values.OrganizationName = org.Name
 		values.ClusterName = cluster.Name
@@ -177,34 +225,41 @@ func (cd AzurePKEClusterDeleter) getClusterStatusChangeDurationTimer(cluster pke
 func (cd AzurePKEClusterDeleter) DeleteByID(ctx context.Context, clusterID uint, forced bool) error {
 	cl, err := cd.store.GetByID(clusterID)
 	if err != nil {
-		return emperror.Wrap(err, "failed to load cluster from data store")
+		return errors.WrapIf(err, "failed to load cluster from data store")
 	}
 	return cd.Delete(ctx, cl, forced)
 }
 
-func collectPublicIPAddressNames(ctx context.Context, logger logrus.FieldLogger, secrets SecretStore, cluster pke.PKEOnAzureCluster, forced bool) ([]string, error) {
-	sir, err := secrets.Get(cluster.OrganizationID, cluster.SecretID)
-	if err != nil {
-		return nil, emperror.Wrap(err, "failed to get cluster secret from secret store")
-	}
-	cc, err := pkgAzure.NewCloudConnection(&azure.PublicCloud, pkgAzure.NewCredentials(sir.Values))
-	if err != nil {
-		return nil, emperror.Wrap(err, "failed to create cloud connection")
-	}
-
+func collectPublicIPAddressNames(ctx context.Context, logger logrus.FieldLogger, pipClient *pkgAzure.PublicIPAddressesClient, secrets SecretStore, loadBalancers []network.LoadBalancer, cluster pke.PKEOnAzureCluster, forced bool) ([]string, error) {
 	names := make(map[string]bool)
-
-	lb, err := cc.GetLoadBalancersClient().Get(ctx, cluster.ResourceGroup.Name, pke.GetLoadBalancerName(cluster.Name), "frontendIPConfigurations/publicIPAddress")
-	if err != nil {
-		if lb.StatusCode == http.StatusNotFound {
-			return nil, nil
-		}
-		return nil, emperror.Wrap(err, "failed to retrieve load balancer")
+	for _, lb := range loadBalancers {
+		names = gatherOwnedPublicIPAddressNames(lb, cluster.Name, names)
 	}
-	names = gatherOwnedPublicIPAddressNames(lb, cluster.Name, names)
 
-	names, err = gatherK8sServicePublicIPs(ctx, cc.GetPublicIPAddressesClient(), cluster, secrets, names)
-	if err = emperror.Wrap(err, "failed to gather k8s services' public IP addresses"); err != nil {
+	pipList, err := pipClient.List(ctx, cluster.ResourceGroup.Name)
+	if err != nil {
+		return nil, errors.WrapIfWithDetails(err, "failed to list Azure public IP address resources in resource group", "resourceGroup", cluster.ResourceGroup.Name)
+	}
+
+	var pips []network.PublicIPAddress
+	for pipList.NotDone() {
+		for _, pip := range pipList.Values() {
+			pips = append(pips, pip)
+		}
+
+		if err := errors.Wrap(pipList.NextWithContext(ctx), "failed to get Azure public IP address resources"); err != nil {
+			if forced {
+				logger.Warning(err)
+			} else {
+				return nil, err
+			}
+		}
+	}
+
+	names = gatherClusterPublicIPAddressNames(pips, cluster.Name, names)
+
+	names, err = gatherK8sServicePublicIPs(pips, cluster, secrets, names)
+	if err = errors.WrapIf(err, "failed to gather k8s services' public IP addresses"); err != nil {
 		if forced {
 			logger.Warning(err)
 		} else {
@@ -241,45 +296,47 @@ func gatherOwnedPublicIPAddressNames(lb network.LoadBalancer, clusterName string
 	return names
 }
 
-func gatherK8sServicePublicIPs(ctx context.Context, client *pkgAzure.PublicIPAddressesClient, cluster pke.PKEOnAzureCluster, secrets SecretStore, names map[string]bool) (map[string]bool, error) {
+// gatherClusterPublicIPAddressNames collect public ips that are tagged with kubernetes-cluster-name : <cluster name> which
+// was introduced in Kubernetes version 1.15
+func gatherClusterPublicIPAddressNames(publicAddresses []network.PublicIPAddress, clusterName string, names map[string]bool) map[string]bool {
+	if names == nil {
+		names = make(map[string]bool)
+	}
+
+	for _, pip := range publicAddresses {
+		if v, ok := pip.Tags["kubernetes-cluster-name"]; ok && to.String(v) == clusterName {
+			names[to.String(pip.Name)] = true
+		}
+	}
+
+	return names
+}
+
+func gatherK8sServicePublicIPs(publicAddresses []network.PublicIPAddress, cluster pke.PKEOnAzureCluster, secrets SecretStore, names map[string]bool) (map[string]bool, error) {
 	if cluster.K8sSecretID == "" {
 		return names, nil
 	}
 
 	k8sConfig, err := intSecret.MakeKubeSecretStore(secrets).Get(cluster.OrganizationID, cluster.K8sSecretID)
 	if err != nil {
-		return names, emperror.Wrap(err, "failed to get k8s config")
-	}
-
-	resPage, err := client.List(ctx, cluster.ResourceGroup.Name)
-	if err != nil {
-		return names, emperror.WrapWith(err, "failed to list Azure public IP address resources in resource group", "resourceGroup", cluster.ResourceGroup.Name)
+		return names, errors.WrapIf(err, "failed to get k8s config")
 	}
 
 	ipToName := make(map[string]string)
-	for {
-		for _, pip := range resPage.Values() {
-			if to.String(pip.Name) != "" && to.String(pip.IPAddress) != "" {
-				ipToName[to.String(pip.IPAddress)] = to.String(pip.Name)
-			}
-		}
-		if resPage.NotDone() {
-			if err := resPage.NextWithContext(ctx); err != nil {
-				return nil, err
-			}
-		} else {
-			break
+	for _, pip := range publicAddresses {
+		if to.String(pip.Name) != "" && to.String(pip.IPAddress) != "" {
+			ipToName[to.String(pip.IPAddress)] = to.String(pip.Name)
 		}
 	}
 
 	k8sClient, err := k8sclient.NewClientFromKubeConfig(k8sConfig)
 	if err != nil {
-		return names, emperror.Wrap(err, "failed to create a new Kubernetes client")
+		return names, errors.WrapIf(err, "failed to create a new Kubernetes client")
 	}
 
 	serviceList, err := k8sClient.CoreV1().Services(metav1.NamespaceAll).List(metav1.ListOptions{})
 	if serviceList == nil || err != nil {
-		return names, emperror.Wrap(err, "failed to retrieve service list")
+		return names, errors.WrapIf(err, "failed to retrieve service list")
 	}
 
 	if names == nil {
@@ -305,4 +362,36 @@ func getVMSSNames(cluster pke.PKEOnAzureCluster) []string {
 		names[i] = pke.GetVMSSName(cluster.Name, np.Name)
 	}
 	return names
+}
+
+func collectClusterLoadBalancers(ctx context.Context, client *pkgAzure.LoadBalancersClient, cluster pke.PKEOnAzureCluster) ([]network.LoadBalancer, error) {
+	if client == nil {
+		return nil, nil
+	}
+	lbs, err := client.List(ctx, cluster.ResourceGroup.Name)
+	if err = errors.WrapIf(err, "failed to list load balancers"); err != nil {
+		return nil, err
+	}
+
+	var clusterLoadBalancers []network.LoadBalancer
+	for lbs.NotDone() {
+		for _, lb := range lbs.Values() {
+			if workflow.HasOwnedTag(cluster.Name, to.StringMap(lb.Tags)) || workflow.HasSharedTag(cluster.Name, to.StringMap(lb.Tags)) {
+				lbDetails, err := client.Get(ctx, cluster.ResourceGroup.Name, to.String(lb.Name), "frontendIPConfigurations/publicIPAddress")
+				if err != nil {
+					if lb.StatusCode == http.StatusNotFound {
+						continue
+					}
+					return nil, errors.WrapIf(err, "failed to retrieve load balancer")
+				}
+
+				clusterLoadBalancers = append(clusterLoadBalancers, lbDetails)
+			}
+		}
+		err = lbs.NextWithContext(ctx)
+		if err != nil {
+			return nil, errors.WrapIf(err, "retrieving load balancers failed")
+		}
+	}
+	return clusterLoadBalancers, nil
 }

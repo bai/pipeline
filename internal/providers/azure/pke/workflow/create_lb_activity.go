@@ -18,7 +18,10 @@ import (
 	"context"
 	"fmt"
 
-	"emperror.dev/emperror"
+	"emperror.dev/errors"
+
+	"github.com/banzaicloud/pipeline/internal/providers/azure/pke"
+
 	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2018-10-01/network"
 	"github.com/Azure/go-autorest/autorest/to"
 	"go.uber.org/cadence/activity"
@@ -67,6 +70,7 @@ type BackendAddressPool struct {
 type FrontendIPConfiguration struct {
 	Name              string
 	PublicIPAddressID string
+	SubnetID          string
 	Zones             []string
 }
 
@@ -103,8 +107,9 @@ type Probe struct {
 }
 
 type CreateLoadBalancerActivityOutput struct {
-	BackendAddressPoolIDs map[string]string
-	InboundNATPoolIDs     map[string]string
+	BackendAddressPoolIDs   map[string]string
+	InboundNATPoolIDs       map[string]string
+	ApiServerPrivateAddress string
 }
 
 // Execute performs the activity
@@ -125,7 +130,7 @@ func (a CreateLoadBalancerActivity) Execute(ctx context.Context, input CreateLoa
 	logger.Info("create load balancer")
 
 	cc, err := a.azureClientFactory.New(input.OrganizationID, input.SecretID)
-	if err = emperror.Wrap(err, "failed to create cloud connection"); err != nil {
+	if err = errors.WrapIf(err, "failed to create cloud connection"); err != nil {
 		return
 	}
 
@@ -134,19 +139,19 @@ func (a CreateLoadBalancerActivity) Execute(ctx context.Context, input CreateLoa
 	params := input.getCreateOrUpdateLoadBalancerParams(cc.GetSubscriptionID())
 
 	future, err := client.CreateOrUpdate(ctx, input.ResourceGroupName, input.LoadBalancer.Name, params)
-	if err = emperror.WrapWith(err, "sending request to create or update load balancer failed", keyvals...); err != nil {
+	if err = errors.WrapIfWithDetails(err, "sending request to create or update load balancer failed", keyvals...); err != nil {
 		return
 	}
 
 	logger.Debug("waiting for the completion of create or update load balancer operation")
 
 	err = future.WaitForCompletionRef(ctx, client.Client)
-	if err = emperror.WrapWith(err, "waiting for the completion of create or update load balancer operation failed", keyvals...); err != nil {
+	if err = errors.WrapIfWithDetails(err, "waiting for the completion of create or update load balancer operation failed", keyvals...); err != nil {
 		return
 	}
 
 	lb, err := future.Result(client.LoadBalancersClient)
-	if err = emperror.WrapWith(err, "getting load balancer create or update result failed", keyvals...); err != nil {
+	if err = errors.WrapIfWithDetails(err, "getting load balancer create or update result failed", keyvals...); err != nil {
 		return
 	}
 
@@ -166,26 +171,56 @@ func (a CreateLoadBalancerActivity) Execute(ctx context.Context, input CreateLoa
 			}
 		}
 	}
+	if lb.FrontendIPConfigurations != nil && lb.LoadBalancingRules != nil {
+		for _, lbRule := range *lb.LoadBalancingRules {
+			if to.String(lbRule.Name) == pke.GetApiServerLBRuleName() {
+				for _, fic := range *lb.FrontendIPConfigurations {
+					if to.String(fic.ID) == to.String(lbRule.FrontendIPConfiguration.ID) && fic.PrivateIPAddress != nil {
+						output.ApiServerPrivateAddress = to.String(fic.PrivateIPAddress)
+						break
+					}
+				}
+				break
+			}
+		}
+	}
+
 	return
 }
 
 func (input CreateLoadBalancerActivityInput) getCreateOrUpdateLoadBalancerParams(subscriptionID string) network.LoadBalancer {
-	backendAddressPools := make([]network.BackendAddressPool, len(input.LoadBalancer.BackendAddressPools))
-	for i, bap := range input.LoadBalancer.BackendAddressPools {
-		backendAddressPools[i] = network.BackendAddressPool{
-			Name: to.StringPtr(bap.Name),
+	backendAddressPools := make([]network.BackendAddressPool, 0, len(input.LoadBalancer.BackendAddressPools))
+	for _, bap := range input.LoadBalancer.BackendAddressPools {
+		if bap.Name != "" {
+			backendAddressPools = append(backendAddressPools, network.BackendAddressPool{
+				Name: to.StringPtr(bap.Name),
+			})
 		}
 	}
 
 	frontendIPConfigurations := make([]network.FrontendIPConfiguration, len(input.LoadBalancer.FrontendIPConfigurations))
 	for i, fic := range input.LoadBalancer.FrontendIPConfigurations {
+		var pip *network.PublicIPAddress
+		var subnet *network.Subnet
+
+		if fic.PublicIPAddressID != "" {
+			pip = &network.PublicIPAddress{
+				ID: to.StringPtr(fic.PublicIPAddressID),
+			}
+		}
+
+		if fic.SubnetID != "" {
+			subnet = &network.Subnet{
+				ID: to.StringPtr(fic.SubnetID),
+			}
+		}
+
 		frontendIPConfigurations[i] = network.FrontendIPConfiguration{
 			Name: to.StringPtr(fic.Name),
 			FrontendIPConfigurationPropertiesFormat: &network.FrontendIPConfigurationPropertiesFormat{
 				PrivateIPAllocationMethod: network.Dynamic,
-				PublicIPAddress: &network.PublicIPAddress{
-					ID: to.StringPtr(fic.PublicIPAddressID),
-				},
+				PublicIPAddress:           pip,
+				Subnet:                    subnet,
 			},
 			Zones: to.StringSlicePtr(fic.Zones),
 		}
