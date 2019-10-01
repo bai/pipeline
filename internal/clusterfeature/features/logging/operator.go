@@ -20,11 +20,14 @@ import (
 	"fmt"
 
 	"emperror.dev/errors"
+	pkgCluster "github.com/banzaicloud/pipeline/cluster"
 	"github.com/banzaicloud/pipeline/config"
 	"github.com/banzaicloud/pipeline/internal/clusterfeature"
 	"github.com/banzaicloud/pipeline/internal/clusterfeature/clusterfeatureadapter"
 	"github.com/banzaicloud/pipeline/internal/clusterfeature/features"
 	"github.com/banzaicloud/pipeline/internal/common"
+	pkgSecret "github.com/banzaicloud/pipeline/pkg/secret"
+	"github.com/banzaicloud/pipeline/secret"
 )
 
 // FeatureOperator implements the Logging feature operator
@@ -32,6 +35,7 @@ type FeatureOperator struct {
 	clusterGetter  clusterfeatureadapter.ClusterGetter
 	clusterService clusterfeature.ClusterService
 	helmService    features.HelmService
+	secretStore    features.SecretStore
 	config         Configuration
 	logger         common.Logger
 }
@@ -41,6 +45,7 @@ func MakeFeatureOperator(
 	clusterGetter clusterfeatureadapter.ClusterGetter,
 	clusterService clusterfeature.ClusterService,
 	helmService features.HelmService,
+	secretStore features.SecretStore,
 	config Configuration,
 	logger common.Logger,
 ) FeatureOperator {
@@ -48,6 +53,7 @@ func MakeFeatureOperator(
 		clusterGetter:  clusterGetter,
 		clusterService: clusterService,
 		helmService:    helmService,
+		secretStore:    secretStore,
 		config:         config,
 		logger:         logger,
 	}
@@ -73,6 +79,16 @@ func (op FeatureOperator) Apply(ctx context.Context, clusterID uint, spec cluste
 			FeatureName: featureName,
 			Problem:     err.Error(),
 		}
+	}
+
+	// generate TLS secret
+	if err := op.generateTLSSecret(ctx, clusterID); err != nil {
+		return errors.WrapIf(err, "failed to generate TLS secret for logging feature")
+	}
+
+	// install TLS secret to cluster
+	if err := op.installTLSSecretToCluster(ctx, clusterID); err != nil {
+		return errors.WrapIf(err, "failed to install TLS secret")
 	}
 
 	// install logging-operator
@@ -102,6 +118,7 @@ func (op FeatureOperator) Deactivate(ctx context.Context, clusterID uint, spec c
 
 		return errors.WrapIf(err, fmt.Sprintf("failed to uninstall deployment: %q", config.LoggingOperatorReleaseName))
 	}
+	// TODO (colin): remove TLS secret from Vault
 
 	return nil
 }
@@ -148,4 +165,57 @@ func (op FeatureOperator) installLoggingOperatorLogging(ctx context.Context, clu
 		valuesBytes,
 		op.config.logging.chartVersion,
 	)
+}
+
+func (op FeatureOperator) generateTLSSecret(ctx context.Context, clusterID uint) error {
+	var namespace = op.config.pipelineSystemNamespace
+	var tlsHost = "fluentd." + namespace + ".svc.cluster.local"
+	var secretName = getTLSSecretName(clusterID)
+
+	req := &secret.CreateSecretRequest{
+		Name: secretName,
+		Type: pkgSecret.TLSSecretType,
+		Tags: []string{
+			pkgSecret.TagBanzaiReadonly,
+			secretTag,
+		},
+		Values: map[string]string{
+			pkgSecret.TLSHosts: tlsHost,
+		},
+	}
+
+	// store TLS secret
+	_, err := op.secretStore.Store(ctx, req)
+	if err != nil {
+		return errors.WrapIf(err, "failed generate TLS secrets to logging operator")
+	}
+
+	return nil
+}
+
+func (op FeatureOperator) installTLSSecretToCluster(ctx context.Context, clusterID uint) error {
+	cl, err := op.clusterGetter.GetClusterByIDOnly(ctx, clusterID)
+	if err != nil {
+		return errors.WrapIf(err, "failed to get cluster")
+	}
+
+	var namespace = op.config.pipelineSystemNamespace
+	var secretName = getTLSSecretName(cl.GetID())
+	secretRequest := pkgCluster.InstallSecretRequest{
+		SourceSecretName: secretName,
+		Namespace:        namespace,
+		Update:           true,
+	}
+
+	_, err = pkgCluster.InstallSecret(cl, secretName, secretRequest)
+	if err != nil {
+		return errors.WrapIfWithDetails(err, "failed to install secret to the cluster", "clusterID", cl.GetID())
+	}
+
+	return nil
+}
+
+func (op FeatureOperator) deleteTLSSecret(ctx context.Context) error {
+	// 	op.secretStore.Delete(ctx, )
+	return nil
 }

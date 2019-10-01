@@ -14,10 +14,17 @@
 
 package logging
 
+import "fmt"
+
 const (
 	featureName        = "logging"
 	providerAmazonS3   = "s3"
 	providerGoogleGCS  = "gcs"
 	providerAlibabaOSS = "oss"
 	providerAzure      = "azure"
+	secretTag          = "feature:logging"
 )
+
+func getTLSSecretName(clusterID uint) string {
+	return fmt.Sprintf("logging-tls-%d", clusterID)
+}
