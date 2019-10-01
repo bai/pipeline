@@ -17,14 +17,17 @@ package logging
 import (
 	"context"
 
+	"emperror.dev/errors"
 	"github.com/banzaicloud/pipeline/internal/clusterfeature"
 	"github.com/banzaicloud/pipeline/internal/clusterfeature/clusterfeatureadapter"
+	"github.com/banzaicloud/pipeline/internal/clusterfeature/features"
 	"github.com/banzaicloud/pipeline/internal/common"
 )
 
 type FeatureManager struct {
 	clusterGetter clusterfeatureadapter.ClusterGetter
 	config        Configuration
+	secretStore   features.SecretStore
 	logger        common.Logger
 }
 
@@ -32,11 +35,13 @@ type FeatureManager struct {
 func MakeFeatureManager(
 	clusterGetter clusterfeatureadapter.ClusterGetter,
 	config Configuration,
+	secretStore features.SecretStore,
 	logger common.Logger,
 ) FeatureManager {
 	return FeatureManager{
 		clusterGetter: clusterGetter,
 		config:        config,
+		secretStore:   secretStore,
 		logger:        logger,
 	}
 }
@@ -46,8 +51,26 @@ func (FeatureManager) Name() string {
 }
 
 func (m FeatureManager) GetOutput(ctx context.Context, clusterID uint, spec clusterfeature.FeatureSpec) (clusterfeature.FeatureOutput, error) {
-	// TODO (colin): implement me
-	return clusterfeature.FeatureOutput{}, nil
+	// TODO (colin): extends me
+
+	var tlsSecretName = getTLSSecretName(clusterID)
+	tlsSecretID, err := m.secretStore.GetIDByName(ctx, tlsSecretName)
+	if err != nil {
+		return nil, errors.WrapIf(err, "failed to get TLS secret")
+	}
+
+	var output = clusterfeature.FeatureOutput{
+		"loggingOperator": map[string]interface{}{
+			"version": m.config.operator.chartVersion,
+		},
+		"logging": map[string]interface{}{
+			"version": m.config.logging.chartVersion,
+		},
+		"tls": map[string]interface{}{
+			"secretId": tlsSecretID,
+		},
+	}
+	return output, nil
 }
 
 func (m FeatureManager) ValidateSpec(ctx context.Context, spec clusterfeature.FeatureSpec) error {

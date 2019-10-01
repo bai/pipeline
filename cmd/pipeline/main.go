@@ -643,7 +643,7 @@ func main() {
 					securityscan.MakeFeatureManager(logger),
 					featureVault.MakeFeatureManager(clusterGetter, secretStore, logger),
 					featureMonitoring.MakeFeatureManager(clusterGetter, secretStore, endpointManager, helmService, monitoringConfig, logger),
-					featureLogging.MakeFeatureManager(clusterGetter, loggingConfig, logger),
+					featureLogging.MakeFeatureManager(clusterGetter, loggingConfig, secretStore, logger),
 				})
 				featureOperationDispatcher := clusterfeatureadapter.MakeCadenceFeatureOperationDispatcher(workflowClient, logger)
 				service := clusterfeature.MakeFeatureService(featureOperationDispatcher, featureManagerRegistry, featureRepository, logger)
