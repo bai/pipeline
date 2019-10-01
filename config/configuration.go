@@ -142,7 +142,8 @@ const (
 	OIDCIssuerInsecure = "auth.oidcIssuerInsecure"
 
 	// Logging operator constants
-	LoggingReleaseName          = "logging-operator"
+	LoggingOperatorReleaseName  = "logging-operator"
+	LoggingReleaseName          = "logging"
 	LoggingOperatorChartVersion = "loggingOperator.chartVersion"
 	LoggingOperatorImageTag     = "loggingOperator.imageTag"
 
@@ -205,8 +206,10 @@ const (
 	PrometheusPushgatewayChartKey   = "prometheusPushgateway.chart"
 	PrometheusPushgatewayVersionKey = "prometheusPushgateway.chartVersion"
 
-	LoggingChartKey        = "feature.logging.chart"
-	LoggingChartVersionKey = "feature.logging.chartVersion"
+	LoggingOperatorChartKey        = "feature.logging.operator.chart"
+	LoggingOperatorChartVersionKey = "feature.logging.operator.chartVersion"
+	LoggingChartKey                = "feature.logging.chart"
+	LoggingChartVersionKey         = "feature.logging.chartVersion"
 )
 
 // Init initializes the configurations
@@ -405,8 +408,10 @@ func init() {
 	viper.SetDefault(VaultWebhookChartKey, "banzaicloud-stable/vault-secrets-webhook")
 	viper.SetDefault(VaultWebhookChartVersionKey, "0.5.2")
 
-	viper.SetDefault(LoggingChartKey, "banzaicloud-stable/logging-operator")
-	viper.SetDefault(LoggingChartVersionKey, "2.1.1")
+	viper.SetDefault(LoggingOperatorChartKey, "banzaicloud-stable/logging-operator")
+	viper.SetDefault(LoggingOperatorChartVersionKey, "2.1.1")
+	viper.SetDefault(LoggingChartKey, "banzaicloud-stable/logging-operator-logging")
+	viper.SetDefault(LoggingChartVersionKey, "2.1.0")
 
 	// Find and read the config file
 	if err := viper.ReadInConfig(); err != nil {

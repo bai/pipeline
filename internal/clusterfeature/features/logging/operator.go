@@ -75,28 +75,14 @@ func (op FeatureOperator) Apply(ctx context.Context, clusterID uint, spec cluste
 		}
 	}
 
-	var chartValues = loggingOperatorValues{
-		// todo (colin): extend me
+	// install logging-operator
+	if err := op.installLoggingOperator(ctx, clusterID, logger); err != nil {
+		return errors.WrapIf(err, fmt.Sprintf("failed to install deployment: %q", op.config.operator.chartName))
 	}
 
-	valuesBytes, err := json.Marshal(chartValues)
-	if err != nil {
-		logger.Debug("failed to marshal chartValues")
-		return errors.WrapIf(err, "failed to decode chartValues")
-	}
-
-	var chartName = op.config.operator.chartName
-
-	if err := op.helmService.ApplyDeployment(
-		ctx,
-		clusterID,
-		op.config.pipelineSystemNamespace,
-		chartName,
-		config.LoggingReleaseName,
-		valuesBytes,
-		op.config.operator.chartVersion,
-	); err != nil {
-		return errors.WrapIf(err, fmt.Sprintf("failed to install deployment: %q", chartName))
+	// install logging-operator-logging
+	if err := op.installLoggingOperatorLogging(ctx, clusterID, logger); err != nil {
+		return errors.WrapIf(err, fmt.Sprintf("failed to install deployment: %q", op.config.logging.chartName))
 	}
 
 	return nil
@@ -111,11 +97,55 @@ func (op FeatureOperator) Deactivate(ctx context.Context, clusterID uint, spec c
 	logger := op.logger.WithContext(ctx).WithFields(map[string]interface{}{"cluster": clusterID, "feature": featureName})
 
 	// delete deployment
-	if err := op.helmService.DeleteDeployment(ctx, clusterID, config.LoggingReleaseName); err != nil {
-		logger.Info(fmt.Sprintf("failed to delete feature deployment: %q", config.LoggingReleaseName))
+	if err := op.helmService.DeleteDeployment(ctx, clusterID, config.LoggingOperatorReleaseName); err != nil {
+		logger.Info(fmt.Sprintf("failed to delete feature deployment: %q", config.LoggingOperatorReleaseName))
 
-		return errors.WrapIf(err, fmt.Sprintf("failed to uninstall deployment: %q", config.LoggingReleaseName))
+		return errors.WrapIf(err, fmt.Sprintf("failed to uninstall deployment: %q", config.LoggingOperatorReleaseName))
 	}
 
 	return nil
+}
+
+func (op FeatureOperator) installLoggingOperator(ctx context.Context, clusterID uint, logger common.Logger) error {
+	var chartValues = loggingOperatorValues{
+		// todo (colin): extend me
+	}
+
+	valuesBytes, err := json.Marshal(chartValues)
+	if err != nil {
+		logger.Debug("failed to marshal chartValues")
+		return errors.WrapIf(err, "failed to decode chartValues")
+	}
+
+	return op.helmService.ApplyDeployment(
+		ctx,
+		clusterID,
+		op.config.pipelineSystemNamespace,
+		op.config.operator.chartName,
+		config.LoggingOperatorReleaseName,
+		valuesBytes,
+		op.config.operator.chartVersion,
+	)
+}
+
+func (op FeatureOperator) installLoggingOperatorLogging(ctx context.Context, clusterID uint, logger common.Logger) error {
+	var chartValues = loggingOperatorLoggingValues{
+		// todo (colin): extend me
+	}
+
+	valuesBytes, err := json.Marshal(chartValues)
+	if err != nil {
+		logger.Debug("failed to marshal chartValues")
+		return errors.WrapIf(err, "failed to decode chartValues")
+	}
+
+	return op.helmService.ApplyDeployment(
+		ctx,
+		clusterID,
+		op.config.pipelineSystemNamespace,
+		op.config.logging.chartName,
+		config.LoggingReleaseName,
+		valuesBytes,
+		op.config.logging.chartVersion,
+	)
 }

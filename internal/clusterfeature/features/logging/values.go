@@ -16,3 +16,6 @@ package logging
 
 type loggingOperatorValues struct {
 }
+
+type loggingOperatorLoggingValues struct {
+}

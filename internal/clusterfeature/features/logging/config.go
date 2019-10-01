@@ -25,6 +25,10 @@ type Configuration struct {
 		chartName    string
 		chartVersion string
 	}
+	logging struct {
+		chartName    string
+		chartVersion string
+	}
 }
 
 func NewConfig() Configuration {
@@ -34,7 +38,15 @@ func NewConfig() Configuration {
 			chartName    string
 			chartVersion string
 		}{
+			chartName:    viper.GetString(config.LoggingOperatorChartKey),
+			chartVersion: viper.GetString(config.LoggingOperatorChartVersionKey),
+		},
+		logging: struct {
+			chartName    string
+			chartVersion string
+		}{
 			chartName:    viper.GetString(config.LoggingChartKey),
 			chartVersion: viper.GetString(config.LoggingChartVersionKey),
-		}}
+		},
+	}
 }
