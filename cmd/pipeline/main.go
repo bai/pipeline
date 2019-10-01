@@ -637,12 +637,13 @@ func main() {
 				endpointManager := endpoints.NewEndpointManager(logger)
 				helmService := helm.NewHelmService(helmadapter.NewClusterService(clusterManager), logger)
 				monitoringConfig := featureMonitoring.NewFeatureConfiguration()
+				loggingConfig := featureLogging.NewConfig()
 				featureManagerRegistry := clusterfeature.MakeFeatureManagerRegistry([]clusterfeature.FeatureManager{
 					featureDns.MakeFeatureManager(clusterGetter, logger, orgDomainService),
 					securityscan.MakeFeatureManager(logger),
 					featureVault.MakeFeatureManager(clusterGetter, secretStore, logger),
 					featureMonitoring.MakeFeatureManager(clusterGetter, secretStore, endpointManager, helmService, monitoringConfig, logger),
-					featureLogging.MakeFeatureManager(clusterGetter, logger),
+					featureLogging.MakeFeatureManager(clusterGetter, loggingConfig, logger),
 				})
 				featureOperationDispatcher := clusterfeatureadapter.MakeCadenceFeatureOperationDispatcher(workflowClient, logger)
 				service := clusterfeature.MakeFeatureService(featureOperationDispatcher, featureManagerRegistry, featureRepository, logger)

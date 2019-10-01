@@ -24,16 +24,19 @@ import (
 
 type FeatureManager struct {
 	clusterGetter clusterfeatureadapter.ClusterGetter
+	config        Configuration
 	logger        common.Logger
 }
 
 // NewVaultFeatureManager builds a new feature manager component
 func MakeFeatureManager(
 	clusterGetter clusterfeatureadapter.ClusterGetter,
+	config Configuration,
 	logger common.Logger,
 ) FeatureManager {
 	return FeatureManager{
 		clusterGetter: clusterGetter,
+		config:        config,
 		logger:        logger,
 	}
 }

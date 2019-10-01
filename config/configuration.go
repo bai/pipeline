@@ -204,6 +204,9 @@ const (
 	PrometheusOperatorVersionKey    = "prometheusOperator.chartVersion"
 	PrometheusPushgatewayChartKey   = "prometheusPushgateway.chart"
 	PrometheusPushgatewayVersionKey = "prometheusPushgateway.chartVersion"
+
+	LoggingChartKey        = "feature.logging.chart"
+	LoggingChartVersionKey = "feature.logging.chartVersion"
 )
 
 // Init initializes the configurations
@@ -401,6 +404,9 @@ func init() {
 
 	viper.SetDefault(VaultWebhookChartKey, "banzaicloud-stable/vault-secrets-webhook")
 	viper.SetDefault(VaultWebhookChartVersionKey, "0.5.2")
+
+	viper.SetDefault(LoggingChartKey, "banzaicloud-stable/logging-operator")
+	viper.SetDefault(LoggingChartVersionKey, "2.1.1")
 
 	// Find and read the config file
 	if err := viper.ReadInConfig(); err != nil {

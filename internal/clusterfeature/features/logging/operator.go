@@ -16,7 +16,11 @@ package logging
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 
+	"emperror.dev/errors"
+	"github.com/banzaicloud/pipeline/config"
 	"github.com/banzaicloud/pipeline/internal/clusterfeature"
 	"github.com/banzaicloud/pipeline/internal/clusterfeature/clusterfeatureadapter"
 	"github.com/banzaicloud/pipeline/internal/clusterfeature/features"
@@ -28,6 +32,7 @@ type FeatureOperator struct {
 	clusterGetter  clusterfeatureadapter.ClusterGetter
 	clusterService clusterfeature.ClusterService
 	helmService    features.HelmService
+	config         Configuration
 	logger         common.Logger
 }
 
@@ -36,12 +41,14 @@ func MakeFeatureOperator(
 	clusterGetter clusterfeatureadapter.ClusterGetter,
 	clusterService clusterfeature.ClusterService,
 	helmService features.HelmService,
+	config Configuration,
 	logger common.Logger,
 ) FeatureOperator {
 	return FeatureOperator{
 		clusterGetter:  clusterGetter,
 		clusterService: clusterService,
 		helmService:    helmService,
+		config:         config,
 		logger:         logger,
 	}
 }
@@ -53,12 +60,62 @@ func (op FeatureOperator) Name() string {
 
 // Apply applies the provided specification to the cluster feature
 func (op FeatureOperator) Apply(ctx context.Context, clusterID uint, spec clusterfeature.FeatureSpec) error {
-	// TODO (colin): implement me
+	if err := op.clusterService.CheckClusterReady(ctx, clusterID); err != nil {
+		return err
+	}
+
+	logger := op.logger.WithContext(ctx).WithFields(map[string]interface{}{"cluster": clusterID, "feature": featureName})
+
+	//boundSpec, err := bindFeatureSpec(spec)
+	_, err := bindFeatureSpec(spec)
+	if err != nil {
+		return clusterfeature.InvalidFeatureSpecError{
+			FeatureName: featureName,
+			Problem:     err.Error(),
+		}
+	}
+
+	var chartValues = loggingOperatorValues{
+		// todo (colin): extend me
+	}
+
+	valuesBytes, err := json.Marshal(chartValues)
+	if err != nil {
+		logger.Debug("failed to marshal chartValues")
+		return errors.WrapIf(err, "failed to decode chartValues")
+	}
+
+	var chartName = op.config.operator.chartName
+
+	if err := op.helmService.ApplyDeployment(
+		ctx,
+		clusterID,
+		op.config.pipelineSystemNamespace,
+		chartName,
+		config.LoggingReleaseName,
+		valuesBytes,
+		op.config.operator.chartVersion,
+	); err != nil {
+		return errors.WrapIf(err, fmt.Sprintf("failed to install deployment: %q", chartName))
+	}
+
 	return nil
 }
 
 // Deactivate deactivates the cluster feature
 func (op FeatureOperator) Deactivate(ctx context.Context, clusterID uint, spec clusterfeature.FeatureSpec) error {
-	// TODO (colin): implement me
+	if err := op.clusterService.CheckClusterReady(ctx, clusterID); err != nil {
+		return err
+	}
+
+	logger := op.logger.WithContext(ctx).WithFields(map[string]interface{}{"cluster": clusterID, "feature": featureName})
+
+	// delete deployment
+	if err := op.helmService.DeleteDeployment(ctx, clusterID, config.LoggingReleaseName); err != nil {
+		logger.Info(fmt.Sprintf("failed to delete feature deployment: %q", config.LoggingReleaseName))
+
+		return errors.WrapIf(err, fmt.Sprintf("failed to uninstall deployment: %q", config.LoggingReleaseName))
+	}
+
 	return nil
 }
