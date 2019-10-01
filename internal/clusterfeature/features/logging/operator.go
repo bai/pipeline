@@ -20,6 +20,7 @@ import (
 	"fmt"
 
 	"emperror.dev/errors"
+	"github.com/banzaicloud/pipeline/auth"
 	pkgCluster "github.com/banzaicloud/pipeline/cluster"
 	"github.com/banzaicloud/pipeline/config"
 	"github.com/banzaicloud/pipeline/internal/clusterfeature"
@@ -70,10 +71,15 @@ func (op FeatureOperator) Apply(ctx context.Context, clusterID uint, spec cluste
 		return err
 	}
 
+	ctx, err := op.ensureOrgIDInContext(ctx, clusterID)
+	if err != nil {
+		return err
+	}
+
 	logger := op.logger.WithContext(ctx).WithFields(map[string]interface{}{"cluster": clusterID, "feature": featureName})
 
 	//boundSpec, err := bindFeatureSpec(spec)
-	_, err := bindFeatureSpec(spec)
+	_, err = bindFeatureSpec(spec)
 	if err != nil {
 		return clusterfeature.InvalidFeatureSpecError{
 			FeatureName: featureName,
@@ -110,6 +116,11 @@ func (op FeatureOperator) Deactivate(ctx context.Context, clusterID uint, spec c
 		return err
 	}
 
+	ctx, err := op.ensureOrgIDInContext(ctx, clusterID)
+	if err != nil {
+		return err
+	}
+
 	logger := op.logger.WithContext(ctx).WithFields(map[string]interface{}{"cluster": clusterID, "feature": featureName})
 
 	// delete deployment
@@ -118,7 +129,11 @@ func (op FeatureOperator) Deactivate(ctx context.Context, clusterID uint, spec c
 
 		return errors.WrapIf(err, fmt.Sprintf("failed to uninstall deployment: %q", config.LoggingOperatorReleaseName))
 	}
-	// TODO (colin): remove TLS secret from Vault
+
+	// remove TLS secret from Vault
+	if err := op.deleteTLSSecret(ctx, clusterID); err != nil {
+		return errors.WrapIf(err, "failed to delete TLS secret from Vault")
+	}
 
 	return nil
 }
@@ -215,7 +230,27 @@ func (op FeatureOperator) installTLSSecretToCluster(ctx context.Context, cluster
 	return nil
 }
 
-func (op FeatureOperator) deleteTLSSecret(ctx context.Context) error {
-	// 	op.secretStore.Delete(ctx, )
+func (op FeatureOperator) deleteTLSSecret(ctx context.Context, clusterID uint) error {
+	var secretName = getTLSSecretName(clusterID)
+	secretID, err := op.secretStore.GetIDByName(ctx, secretName)
+	if err != nil {
+		return errors.WrapIf(err, "failed to get TLS secret")
+	}
+
+	if err := op.secretStore.Delete(ctx, secretID); err != nil {
+		return errors.WrapIf(err, "failed to delete TLS secret")
+	}
+
 	return nil
+}
+
+func (op FeatureOperator) ensureOrgIDInContext(ctx context.Context, clusterID uint) (context.Context, error) {
+	if _, ok := auth.GetCurrentOrganizationID(ctx); !ok {
+		cluster, err := op.clusterGetter.GetClusterByIDOnly(ctx, clusterID)
+		if err != nil {
+			return ctx, errors.WrapIf(err, "failed to get cluster by ID")
+		}
+		ctx = auth.SetCurrentOrganizationID(ctx, cluster.GetOrganizationId())
+	}
+	return ctx, nil
 }
