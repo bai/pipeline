@@ -29,6 +29,7 @@ type Configuration struct {
 		chartName    string
 		chartVersion string
 	}
+	grafanaAdminUsername string
 }
 
 func NewConfig() Configuration {
@@ -48,5 +49,6 @@ func NewConfig() Configuration {
 			chartName:    viper.GetString(config.LoggingChartKey),
 			chartVersion: viper.GetString(config.LoggingChartVersionKey),
 		},
+		grafanaAdminUsername: viper.GetString(config.MonitorGrafanaAdminUserNameKey),
 	}
 }

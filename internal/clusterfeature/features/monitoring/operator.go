@@ -38,6 +38,7 @@ type FeatureOperator struct {
 	clusterGetter  clusterfeatureadapter.ClusterGetter
 	clusterService clusterfeature.ClusterService
 	helmService    features.HelmService
+	grafanaService features.GrafanaSecretService
 	config         Configuration
 	logger         common.Logger
 	secretStore    features.SecretStore
@@ -52,11 +53,17 @@ func MakeFeatureOperator(
 	logger common.Logger,
 	secretStore features.SecretStore,
 ) FeatureOperator {
+	grafanaService := features.NewGrafanaSecretService(
+		config.grafanaAdminUsername,
+		secretStore,
+		logger,
+	)
 	return FeatureOperator{
 		clusterGetter:  clusterGetter,
 		clusterService: clusterService,
 		helmService:    helmService,
 		config:         config,
+		grafanaService: grafanaService,
 		logger:         logger,
 		secretStore:    secretStore,
 	}
@@ -346,39 +353,20 @@ func (op FeatureOperator) generateGrafanaSecret(
 	clusterUidSecretTag := getClusterUIDSecretTag(cluster.GetUID())
 	releaseSecretTag := getReleaseSecretTag()
 
-	// Generating Grafana credentials
-	username := op.config.grafanaAdminUsername
-	password, err := secret.RandomString("randAlphaNum", 12)
-	if err != nil {
-		return "", errors.WrapIf(err, "failed to generate Grafana admin user password")
-	}
-
-	grafanaSecretRequest := secret.CreateSecretRequest{
-		Name: getGrafanaSecretName(cluster.GetID()),
-		Type: pkgSecret.PasswordSecretType,
-		Values: map[string]string{
-			pkgSecret.Username: username,
-			pkgSecret.Password: password,
-		},
-		Tags: []string{
+	return op.grafanaService.GenerateSecret(
+		ctx,
+		cluster.GetID(),
+		cluster.GetOrganizationId(),
+		[]string{
 			clusterNameSecretTag,
 			clusterUidSecretTag,
-			pkgSecret.TagBanzaiReadonly,
 			releaseSecretTag,
-			grafanaSecretTag,
 		},
-	}
-	grafanaSecretID, err := secret.Store.CreateOrUpdate(cluster.GetOrganizationId(), &grafanaSecretRequest)
-	if err != nil {
-		return "", errors.WrapIf(err, "error store prometheus secret")
-	}
-	logger.Debug("grafana secret stored")
-
-	return grafanaSecretID, nil
+	)
 }
 
 func (op FeatureOperator) deleteGrafanaSecret(ctx context.Context, clusterID uint) error {
-	secretID, err := op.secretStore.GetIDByName(ctx, getGrafanaSecretName(clusterID))
+	secretID, err := op.secretStore.GetIDByName(ctx, op.grafanaService.GetGrafanaSecretName(clusterID))
 	if err != nil {
 		return errors.WrapIf(err, "failed to get Grafana secret")
 	}
@@ -450,7 +438,7 @@ func (op FeatureOperator) getGrafanaSecret(
 	var secretID = spec.Grafana.SecretId
 	if secretID == "" {
 		// check Grafana secret exists
-		existingSecretID, err := op.secretStore.GetIDByName(ctx, getGrafanaSecretName(cluster.GetID()))
+		existingSecretID, err := op.secretStore.GetIDByName(ctx, op.grafanaService.GetGrafanaSecretName(cluster.GetID()))
 		if existingSecretID != "" {
 			logger.Debug("Grafana secret already exists")
 			return existingSecretID, nil

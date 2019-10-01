@@ -22,7 +22,6 @@ const (
 	featureName                      = "monitoring"
 	prometheusOperatorReleaseName    = "monitor"
 	prometheusPushgatewayReleaseName = "pushgateway"
-	grafanaSecretTag                 = "app:grafana"
 	kubePrometheusSecretName         = "prometheus-basic-auth"
 	prometheusSecretUserName         = "prometheus"
 	alertManagerProviderConfigName   = "pipeline-monitoring-feature-providers"
@@ -46,8 +45,4 @@ func getReleaseSecretTag() string {
 
 func getPrometheusSecretName(clusterID uint) string {
 	return fmt.Sprintf("cluster-%d-prometheus", clusterID)
-}
-
-func getGrafanaSecretName(clusterID uint) string {
-	return fmt.Sprintf("cluster-%d-grafana", clusterID)
 }

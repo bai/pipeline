@@ -25,10 +25,11 @@ import (
 )
 
 type FeatureManager struct {
-	clusterGetter clusterfeatureadapter.ClusterGetter
-	config        Configuration
-	secretStore   features.SecretStore
-	logger        common.Logger
+	clusterGetter  clusterfeatureadapter.ClusterGetter
+	config         Configuration
+	secretStore    features.SecretStore
+	grafanaService features.GrafanaSecretService
+	logger         common.Logger
 }
 
 // NewVaultFeatureManager builds a new feature manager component
@@ -38,11 +39,13 @@ func MakeFeatureManager(
 	secretStore features.SecretStore,
 	logger common.Logger,
 ) FeatureManager {
+	grafanaService := features.NewGrafanaSecretService(config.grafanaAdminUsername, secretStore, logger)
 	return FeatureManager{
-		clusterGetter: clusterGetter,
-		config:        config,
-		secretStore:   secretStore,
-		logger:        logger,
+		clusterGetter:  clusterGetter,
+		config:         config,
+		secretStore:    secretStore,
+		grafanaService: grafanaService,
+		logger:         logger,
 	}
 }
 
@@ -59,15 +62,32 @@ func (m FeatureManager) GetOutput(ctx context.Context, clusterID uint, spec clus
 		return nil, errors.WrapIf(err, "failed to get TLS secret")
 	}
 
+	boundSpec, err := bindFeatureSpec(spec)
+	if err != nil {
+		return nil, err
+	}
+
+	var grafanaSecretID = boundSpec.Grafana.SecretId
+	if boundSpec.Grafana.Enabled && grafanaSecretID == "" {
+		var secretName = m.grafanaService.GetGrafanaSecretName(clusterID)
+		grafanaSecretID, err = m.secretStore.GetIDByName(ctx, secretName)
+		if err != nil {
+			return nil, errors.WrapIf(err, "failed to get Grafana secret")
+		}
+	}
+
 	var output = clusterfeature.FeatureOutput{
-		"loggingOperator": map[string]interface{}{
+		"loggingOperator": obj{
 			"version": m.config.operator.chartVersion,
 		},
-		"logging": map[string]interface{}{
+		"logging": obj{
 			"version": m.config.logging.chartVersion,
 		},
-		"tls": map[string]interface{}{
+		"tls": obj{
 			"secretId": tlsSecretID,
+		},
+		"grafana": obj{
+			"secretId": grafanaSecretID,
 		},
 	}
 	return output, nil

@@ -37,6 +37,7 @@ type FeatureOperator struct {
 	clusterService clusterfeature.ClusterService
 	helmService    features.HelmService
 	secretStore    features.SecretStore
+	grafanaService features.GrafanaSecretService
 	config         Configuration
 	logger         common.Logger
 }
@@ -50,11 +51,13 @@ func MakeFeatureOperator(
 	config Configuration,
 	logger common.Logger,
 ) FeatureOperator {
+	grafanaService := features.NewGrafanaSecretService(config.grafanaAdminUsername, secretStore, logger)
 	return FeatureOperator{
 		clusterGetter:  clusterGetter,
 		clusterService: clusterService,
 		helmService:    helmService,
 		secretStore:    secretStore,
+		grafanaService: grafanaService,
 		config:         config,
 		logger:         logger,
 	}
@@ -78,8 +81,7 @@ func (op FeatureOperator) Apply(ctx context.Context, clusterID uint, spec cluste
 
 	logger := op.logger.WithContext(ctx).WithFields(map[string]interface{}{"cluster": clusterID, "feature": featureName})
 
-	//boundSpec, err := bindFeatureSpec(spec)
-	_, err = bindFeatureSpec(spec)
+	boundSpec, err := bindFeatureSpec(spec)
 	if err != nil {
 		return clusterfeature.InvalidFeatureSpecError{
 			FeatureName: featureName,
@@ -87,14 +89,26 @@ func (op FeatureOperator) Apply(ctx context.Context, clusterID uint, spec cluste
 		}
 	}
 
+	cl, err := op.clusterGetter.GetClusterByIDOnly(ctx, clusterID)
+	if err != nil {
+		return errors.WrapIf(err, "failed to get cluster")
+	}
+
 	// generate TLS secret
-	if err := op.generateTLSSecret(ctx, clusterID); err != nil {
+	if err := op.generateTLSSecret(ctx, cl); err != nil {
 		return errors.WrapIf(err, "failed to generate TLS secret for logging feature")
 	}
 
 	// install TLS secret to cluster
-	if err := op.installTLSSecretToCluster(ctx, clusterID); err != nil {
+	if err := op.installTLSSecretToCluster(ctx, cl); err != nil {
 		return errors.WrapIf(err, "failed to install TLS secret")
+	}
+
+	// generate Grafana secret
+	//grafanaSecretID, err := op.generateGrafanaSecret(ctx, cl, boundSpec)
+	_, err = op.generateGrafanaSecret(ctx, cl, boundSpec)
+	if err != nil {
+		return errors.WrapIf(err, "failed to generate Grafana secret")
 	}
 
 	// install logging-operator
@@ -182,10 +196,10 @@ func (op FeatureOperator) installLoggingOperatorLogging(ctx context.Context, clu
 	)
 }
 
-func (op FeatureOperator) generateTLSSecret(ctx context.Context, clusterID uint) error {
+func (op FeatureOperator) generateTLSSecret(ctx context.Context, cluster clusterfeatureadapter.Cluster) error {
 	var namespace = op.config.pipelineSystemNamespace
 	var tlsHost = "fluentd." + namespace + ".svc.cluster.local"
-	var secretName = getTLSSecretName(clusterID)
+	var secretName = getTLSSecretName(cluster.GetID())
 
 	req := &secret.CreateSecretRequest{
 		Name: secretName,
@@ -208,11 +222,7 @@ func (op FeatureOperator) generateTLSSecret(ctx context.Context, clusterID uint)
 	return nil
 }
 
-func (op FeatureOperator) installTLSSecretToCluster(ctx context.Context, clusterID uint) error {
-	cl, err := op.clusterGetter.GetClusterByIDOnly(ctx, clusterID)
-	if err != nil {
-		return errors.WrapIf(err, "failed to get cluster")
-	}
+func (op FeatureOperator) installTLSSecretToCluster(ctx context.Context, cl clusterfeatureadapter.Cluster) error {
 
 	var namespace = op.config.pipelineSystemNamespace
 	var secretName = getTLSSecretName(cl.GetID())
@@ -222,7 +232,7 @@ func (op FeatureOperator) installTLSSecretToCluster(ctx context.Context, cluster
 		Update:           true,
 	}
 
-	_, err = pkgCluster.InstallSecret(cl, secretName, secretRequest)
+	_, err := pkgCluster.InstallSecret(cl, secretName, secretRequest)
 	if err != nil {
 		return errors.WrapIfWithDetails(err, "failed to install secret to the cluster", "clusterID", cl.GetID())
 	}
@@ -253,4 +263,24 @@ func (op FeatureOperator) ensureOrgIDInContext(ctx context.Context, clusterID ui
 		ctx = auth.SetCurrentOrganizationID(ctx, cluster.GetOrganizationId())
 	}
 	return ctx, nil
+}
+
+func (op FeatureOperator) generateGrafanaSecret(ctx context.Context, cluster clusterfeatureadapter.Cluster, boundSpec loggingFeatureSpec) (string, error) {
+	var clusterID = cluster.GetID()
+	var orgID = cluster.GetOrganizationId()
+
+	releaseSecretTag := getReleaseSecretTag()
+
+	var grafanaSecretID = boundSpec.Grafana.SecretId
+	var err error
+	if boundSpec.Grafana.Enabled && grafanaSecretID == "" {
+		grafanaSecretID, err = op.grafanaService.GenerateSecret(
+			ctx,
+			clusterID,
+			orgID,
+			append(getSecretClusterTags(cluster), releaseSecretTag),
+		)
+	}
+
+	return grafanaSecretID, err
 }
