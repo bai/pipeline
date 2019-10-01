@@ -18,26 +18,51 @@ import (
 	"context"
 
 	"github.com/banzaicloud/pipeline/internal/clusterfeature"
+	"github.com/banzaicloud/pipeline/internal/clusterfeature/clusterfeatureadapter"
+	"github.com/banzaicloud/pipeline/internal/common"
 )
 
 type FeatureManager struct {
+	clusterGetter clusterfeatureadapter.ClusterGetter
+	logger        common.Logger
+}
+
+// NewVaultFeatureManager builds a new feature manager component
+func MakeFeatureManager(
+	clusterGetter clusterfeatureadapter.ClusterGetter,
+	logger common.Logger,
+) FeatureManager {
+	return FeatureManager{
+		clusterGetter: clusterGetter,
+		logger:        logger,
+	}
 }
 
 func (FeatureManager) Name() string {
-	return FeatureName
+	return featureName
 }
 
-func (fm FeatureManager) GetOutput(ctx context.Context, clusterID uint) (clusterfeature.FeatureOutput, error) {
-	// TODO
+func (m FeatureManager) GetOutput(ctx context.Context, clusterID uint, spec clusterfeature.FeatureSpec) (clusterfeature.FeatureOutput, error) {
+	// TODO (colin): implement me
 	return clusterfeature.FeatureOutput{}, nil
 }
 
-func (fm FeatureManager) ValidateSpec(ctx context.Context, spec clusterfeature.FeatureSpec) error {
-	// TODO
+func (m FeatureManager) ValidateSpec(ctx context.Context, spec clusterfeature.FeatureSpec) error {
+	vaultSpec, err := bindFeatureSpec(spec)
+	if err != nil {
+		return err
+	}
+
+	if err := vaultSpec.Validate(); err != nil {
+		return clusterfeature.InvalidFeatureSpecError{
+			FeatureName: featureName,
+			Problem:     err.Error(),
+		}
+	}
+
 	return nil
 }
 
-func (fm FeatureManager) PrepareSpec(ctx context.Context, spec clusterfeature.FeatureSpec) (clusterfeature.FeatureSpec, error) {
-	// TODO
+func (m FeatureManager) PrepareSpec(ctx context.Context, spec clusterfeature.FeatureSpec) (clusterfeature.FeatureSpec, error) {
 	return spec, nil
 }

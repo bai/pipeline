@@ -18,21 +18,47 @@ import (
 	"context"
 
 	"github.com/banzaicloud/pipeline/internal/clusterfeature"
+	"github.com/banzaicloud/pipeline/internal/clusterfeature/clusterfeatureadapter"
+	"github.com/banzaicloud/pipeline/internal/clusterfeature/features"
+	"github.com/banzaicloud/pipeline/internal/common"
 )
 
+// FeatureOperator implements the Logging feature operator
 type FeatureOperator struct {
+	clusterGetter  clusterfeatureadapter.ClusterGetter
+	clusterService clusterfeature.ClusterService
+	helmService    features.HelmService
+	logger         common.Logger
 }
 
-func (fo FeatureOperator) Name() string {
-	return FeatureName
+// MakeFeatureOperator returns a Logging feature operator
+func MakeFeatureOperator(
+	clusterGetter clusterfeatureadapter.ClusterGetter,
+	clusterService clusterfeature.ClusterService,
+	helmService features.HelmService,
+	logger common.Logger,
+) FeatureOperator {
+	return FeatureOperator{
+		clusterGetter:  clusterGetter,
+		clusterService: clusterService,
+		helmService:    helmService,
+		logger:         logger,
+	}
 }
 
-func (fo FeatureOperator) Apply(ctx context.Context, clusterID uint, spec clusterfeature.FeatureSpec) error {
-	// TODO
+// Name returns the name of the Logging feature
+func (op FeatureOperator) Name() string {
+	return featureName
+}
+
+// Apply applies the provided specification to the cluster feature
+func (op FeatureOperator) Apply(ctx context.Context, clusterID uint, spec clusterfeature.FeatureSpec) error {
+	// TODO (colin): implement me
 	return nil
 }
 
-func (fo FeatureOperator) Deactivate(ctx context.Context, clusterID uint) error {
-	// TODO
+// Deactivate deactivates the cluster feature
+func (op FeatureOperator) Deactivate(ctx context.Context, clusterID uint, spec clusterfeature.FeatureSpec) error {
+	// TODO (colin): implement me
 	return nil
 }

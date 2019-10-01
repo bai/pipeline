@@ -48,6 +48,7 @@ import (
 	"github.com/banzaicloud/pipeline/internal/clusterfeature"
 	"github.com/banzaicloud/pipeline/internal/clusterfeature/clusterfeatureadapter"
 	featureDns "github.com/banzaicloud/pipeline/internal/clusterfeature/features/dns"
+	featureLogging "github.com/banzaicloud/pipeline/internal/clusterfeature/features/logging"
 	featureMonitoring "github.com/banzaicloud/pipeline/internal/clusterfeature/features/monitoring"
 	featureVault "github.com/banzaicloud/pipeline/internal/clusterfeature/features/vault"
 	"github.com/banzaicloud/pipeline/internal/common/commonadapter"
@@ -305,6 +306,7 @@ func main() {
 				securityscan.MakeFeatureOperator(clusterGetter, clusterService, helmService, secretStore, logger),
 				featureVault.MakeFeatureOperator(clusterGetter, clusterService, helmService, kubernetesService, secretStore, logger),
 				featureMonitoring.MakeFeatureOperator(clusterGetter, clusterService, helmService, monitorConfiguration, logger, secretStore),
+				featureLogging.MakeFeatureOperator(clusterGetter, clusterService, helmService, logger),
 			})
 
 			registerClusterFeatureWorkflows(featureOperatorRegistry, featureRepository)
