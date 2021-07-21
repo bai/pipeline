@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 
+	"emperror.dev/errors"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/cloudformation"
 
@@ -32,8 +33,8 @@ import (
 
 // Service provides an interface to EKS clusters.
 type Service interface {
-	// CreateNodePool creates a new node pool with the specified attributes.
-	CreateNodePool(ctx context.Context, clusterID uint, nodePool NewNodePool) (err error)
+	// CreateNodePools creates new node pools with the specified attributes.
+	CreateNodePools(ctx context.Context, clusterID uint, nodePools map[string]NewNodePool) (err error)
 
 	// DeleteNodePool deletes an existing node pool.
 	DeleteNodePool(ctx context.Context, clusterID uint, nodePoolName string) (isDeleted bool, err error)
@@ -67,6 +68,7 @@ type ClusterUpdate struct {
 type NodePoolUpdate struct {
 	VolumeEncryption *NodePoolVolumeEncryption `mapstructure:"volumeEncryption,omitempty"`
 	VolumeSize       int                       `mapstructure:"volumeSize"`
+	VolumeType       string                    `mapstructure:"volumeType"`
 
 	Image            string   `mapstructure:"image"`
 	SecurityGroups   []string `mapstructure:"securityGroups"`
@@ -106,6 +108,7 @@ type NodePool struct {
 	Autoscaling      Autoscaling               `mapstructure:"autoscaling"`
 	VolumeEncryption *NodePoolVolumeEncryption `mapstructure:"volumeEncryption,omitempty"`
 	VolumeSize       int                       `mapstructure:"volumeSize"`
+	VolumeType       string                    `mapstructure:"volumeType"`
 	InstanceType     string                    `mapstructure:"instanceType"`
 	Image            string                    `mapstructure:"image"`
 	SpotPrice        string                    `mapstructure:"spotPrice"`
@@ -127,12 +130,13 @@ func NewNodePoolFromCFStack(name string, labels map[string]string, stack *cloudf
 		NodeImageID                 string `mapstructure:"NodeImageId"`
 		NodeInstanceType            string `mapstructure:"NodeInstanceType"`
 		NodeSpotPrice               string `mapstructure:"NodeSpotPrice"`
-		NodeVolumeEncryptionEnabled string `mapstructure:"NodeVolumeEncryptionEnabled,omitempty"` // Note: CustomNodeSecurityGroups is only available from template version 2.1.0.
-		NodeVolumeEncryptionKeyARN  string `mapstructure:"NodeVolumeEncryptionKeyARN,omitempty"`  // Note: CustomNodeSecurityGroups is only available from template version 2.1.0.
+		NodeVolumeEncryptionEnabled string `mapstructure:"NodeVolumeEncryptionEnabled,omitempty"` // Note: NodeVolumeEncryptionEnabled is only available from template version 2.1.0.
+		NodeVolumeEncryptionKeyARN  string `mapstructure:"NodeVolumeEncryptionKeyARN,omitempty"`  // Note: NodeVolumeEncryptionKeyARN is only available from template version 2.1.0.
 		NodeVolumeSize              int    `mapstructure:"NodeVolumeSize"`
+		NodeVolumeType              string `mapstructure:"NodeVolumeType,omitempty"`           // Note: NodeVolumeType is only available from template version 2.4.0.
 		CustomNodeSecurityGroups    string `mapstructure:"CustomNodeSecurityGroups,omitempty"` // Note: CustomNodeSecurityGroups is only available from template version 2.0.0.
 		Subnets                     string `mapstructure:"Subnets"`
-		UseInstanceStore            string `mapstructure:"UseInstanceStore,omitempty"`
+		UseInstanceStore            string `mapstructure:"UseInstanceStore,omitempty"` // Note: UseInstanceStore is only available from template version 2.2.0.
 	}
 
 	err := sdkCloudFormation.ParseStackParameters(stack.Parameters, &nodePoolParameters)
@@ -160,6 +164,7 @@ func NewNodePoolFromCFStack(name string, labels map[string]string, stack *cloudf
 	}
 
 	nodePool.VolumeSize = nodePoolParameters.NodeVolumeSize
+	nodePool.VolumeType = nodePoolParameters.NodeVolumeType
 	nodePool.InstanceType = nodePoolParameters.NodeInstanceType
 	nodePool.Image = nodePoolParameters.NodeImageID
 	nodePool.SpotPrice = nodePoolParameters.NodeSpotPrice
@@ -322,9 +327,9 @@ type service struct {
 
 // NodePoolManager is responsible for managing node pools.
 type NodePoolManager interface {
-	// CreateNodePool creates a new node pool in a cluster with the specified
+	// CreateNodePools creates new node pools in a cluster with the specified
 	// attributes.
-	CreateNodePool(ctx context.Context, c cluster.Cluster, nodePool NewNodePool) (err error)
+	CreateNodePools(ctx context.Context, c cluster.Cluster, nodePools map[string]NewNodePool) (err error)
 
 	// DeleteNodePool deletes an existing node pool in a cluster.
 	DeleteNodePool(
@@ -348,23 +353,31 @@ type ClusterManager interface {
 	UpdateCluster(ctx context.Context, c cluster.Cluster, clusterUpdate ClusterUpdate) error
 }
 
-// CreateNodePool creates a new node pool in a cluster with the specified
-// attributes.
-//
-// Implements the Service interface.
-func (s service) CreateNodePool(ctx context.Context, clusterID uint, nodePool NewNodePool) (err error) {
+// CreateNodePools creates new node pools with the specified attributes.
+func (s service) CreateNodePools(ctx context.Context, clusterID uint, nodePools map[string]NewNodePool) (err error) {
 	c, err := s.genericClusters.GetCluster(ctx, clusterID)
 	if err != nil {
 		return err
 	}
 
-	if err := s.nodePoolValidator.ValidateNewNodePool(ctx, c, nodePool); err != nil {
-		return err
+	npErrors := make([]error, 0, len(nodePools))
+	for _, nodePool := range nodePools {
+		if err := s.nodePoolValidator.ValidateNewNodePool(ctx, c, nodePool); err != nil {
+			npErrors = append(npErrors, err)
+		}
+	}
+	if len(npErrors) > 0 {
+		return errors.Combine(npErrors...)
 	}
 
-	nodePool, err = s.nodePoolProcessor.ProcessNewNodePool(ctx, c, nodePool)
-	if err != nil {
-		return err
+	for nodePoolName, nodePool := range nodePools {
+		nodePools[nodePoolName], err = s.nodePoolProcessor.ProcessNewNodePool(ctx, c, nodePool)
+		if err != nil {
+			npErrors = append(npErrors, err)
+		}
+	}
+	if len(npErrors) > 0 {
+		return errors.Combine(npErrors...)
 	}
 
 	err = s.genericClusters.SetStatus(ctx, clusterID, cluster.Updating, "creating node pool")
@@ -372,7 +385,7 @@ func (s service) CreateNodePool(ctx context.Context, clusterID uint, nodePool Ne
 		return err
 	}
 
-	err = s.nodePoolManager.CreateNodePool(ctx, c, nodePool)
+	err = s.nodePoolManager.CreateNodePools(ctx, c, nodePools)
 	if err != nil {
 		return err
 	}

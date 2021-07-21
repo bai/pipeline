@@ -102,6 +102,7 @@ func (a *BootstrapActivity) Execute(ctx context.Context, input BootstrapActivity
 	if err != nil {
 		return nil, errors.WrapIf(err, "could not set eks version for semver check")
 	}
+
 	var volumeBindingMode storagev1.VolumeBindingMode
 	if constraint.Check(kubeVersion) {
 		volumeBindingMode = storagev1.VolumeBindingWaitForFirstConsumer

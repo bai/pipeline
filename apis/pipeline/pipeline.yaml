@@ -3547,7 +3547,7 @@ paths:
                 content:
                     application/json:
                         schema:
-                            $ref: '#/components/schemas/NodePool'
+                            $ref: '#/components/schemas/CreateNodePoolRequest'
             responses:
                 202:
                     description: Node pool creation in progress
@@ -4073,9 +4073,6 @@ components:
                         #         $ref: '#/components/schemas/BasePostHook'
                     example:
                         InstallIngressController:
-
-                scaleOptions:
-                    $ref: '#/components/schemas/ScaleOptions'
                 properties:
                     type: object
                     # additionalProperties:
@@ -4116,39 +4113,8 @@ components:
                 sshSecretId:
                     type: string
                     example: "62bc3c75-91fb-4670-bad4-24b401a9deac"
-                scaleOptions:
-                    $ref: '#/components/schemas/ScaleOptions'
                 type:
                     type: string
-
-        ScaleOptions:
-            type: object
-            required:
-                - enabled
-            properties:
-                enabled:
-                    type: boolean
-                desiredCpu:
-                    type: number
-                    format: double
-                    minimum: 1
-                desiredMem:
-                    type: number
-                    format: double
-                    minimum: 1
-                desiredGpu:
-                    type: integer
-                    minimum: 0
-                onDemandPct:
-                    type: integer
-                    minimum: 0
-                    maximum: 100
-                excludes:
-                    type: array
-                    items:
-                        type: string
-                keepDesiredCapacity:
-                    type: boolean
 
         CreatePKEClusterKubernetes:
             type: object
@@ -4458,6 +4424,11 @@ components:
             #         'pke-on-azure': '#/components/schemas/CreatePKEOnAzureClusterRequest'
             #         'pke-on-vsphere': '#/components/schemas/CreatePKEOnVsphereClusterRequest'
 
+        CreateNodePoolRequest:
+            oneOf:
+                - $ref: '#/components/schemas/NodePool'
+                - $ref: '#/components/schemas/NodePools'
+
         NodePool:
             oneOf:
                 # Note: in OpenAPI generator 4.3.1 single reference
@@ -4473,6 +4444,15 @@ components:
                 # https://github.com/OpenAPITools/openapi-generator/pull/2897
                 - $ref: '#/components/schemas/EksNodePool'
                 - $ref: '#/components/schemas/EksNodePool'
+
+        NodePools:
+            description: An associative collection of node pool objects keyed by their name.
+            properties:
+                nodePools:
+                    type: object
+                    additionalProperties:
+                        $ref: '#/components/schemas/NodePool'
+            type: object
 
         GenericNodePool:
             description: Generic node pool object for all cluster distributions.
@@ -4595,6 +4575,11 @@ components:
                     type: string
             type: object
 
+        # Note: slightly different type from `EKSNodePool`, example differences:
+        #
+        # - `size (integer)` >-< `count (integer)`,
+        #
+        # - `autoscaling (NodePoolAutoscaling) >-<`autoscaling (bool)`
         EksNodePool:
             description: Node pool object for an EKS cluster.
             type: object
@@ -4613,6 +4598,10 @@ components:
                             description: Size of the EBS volume in GBs of the nodes in the pool.
                             type: integer
                             example: 50
+                        volumeType:
+                            description: Type of the EBS volume of the nodes in the pool (default gp3).
+                            type: string
+                            example: gp3
                         instanceType:
                             description: Machine instance type.
                             type: string
@@ -4737,6 +4726,10 @@ components:
                             description: Size of the EBS volume in GBs of the nodes in the pool.
                             type: integer
                             example: 50
+                        volumeType:
+                            description: Type of the EBS volume of the nodes in the pool (default gp3).
+                            type: string
+                            example: gp3
                         instanceType:
                             description: The instance type to use for your node pool.
                             type: string
@@ -4953,8 +4946,8 @@ components:
                                 example:
                                     customTagKey: customTagValue
                             description: User defined tags to be added to created AWS resources. Empty keys and values are not permitted.
-       
-      
+
+
         CreateAKSProperties:
             type: object
             required:
@@ -5701,6 +5694,7 @@ components:
                                             type: string
                                         example: ["asia.gcr.io/google_containers/node-problem-detector@sha256:f95cab985c26b2f46e9bd43283e0bfa88860c14e0fb0649266babe8b65e", "eu.gcr.io/google_containers/node-problem-detector@sha256:f95cab985c26b2f46e9bd43283e0bfa88860c14e0fb0649266babe"]
                                     sizeBytes:
+                                        format: int64
                                         type: integer
                                         example: 286572743
 

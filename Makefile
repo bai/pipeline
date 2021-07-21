@@ -37,8 +37,11 @@ OPENAPI_GENERATOR_VERSION = v4.3.1
 MIGRATE_VERSION = 4.9.1
 GOTESTSUM_VERSION = 0.4.1
 MGA_VERSION = 0.4.2
+GRYPE_VERSION = 0.13.0
+ETCD_VERSION = 3.4.16
+KUBE_APISERVER_VERSION = 1.19.11
 
-GOLANG_VERSION = 1.15
+GOLANG_VERSION = 1.16
 
 export PIPELINE_CONFIG_DIR ?= $(PWD)/config
 
@@ -253,12 +256,34 @@ test-integrated-service-down:
 
 bin/test/kube-apiserver:
 	@mkdir -p bin/test
-	curl -L https://storage.googleapis.com/k8s-c10s-test-binaries/kube-apiserver-$(shell uname)-x86_64 > bin/test/kube-apiserver
+	case "$(shell uname)" in \
+		Linux) \
+			curl -L https://dl.k8s.io/v$(KUBE_APISERVER_VERSION)/kubernetes-server-linux-amd64.tar.gz | tar -xvz -C bin/test ; \
+			;; \
+		*) \
+			printf >&2 "unsupported operating system $(shell uname)" ; \
+			exit 1 ; \
+			;; \
+	esac
+	mv bin/test/kubernetes/server/bin/kube-apiserver bin/test/kube-apiserver
 	chmod +x bin/test/kube-apiserver
 
 bin/test/etcd:
 	@mkdir -p bin/test
-	curl -L https://storage.googleapis.com/k8s-c10s-test-binaries/etcd-$(shell uname)-x86_64 > bin/test/etcd
+	case "$(shell uname)" in \
+		Linux) \
+			curl -L https://github.com/etcd-io/etcd/releases/download/v$(ETCD_VERSION)/etcd-v$(ETCD_VERSION)-linux-amd64.tar.gz | tar -xvz -C bin/test ; \
+			mv bin/test/etcd-v$(ETCD_VERSION)-linux-amd64/etcd bin/test/etcd ; \
+			;; \
+		Darwin) \
+			curl -L https://github.com/etcd-io/etcd/releases/download/v$(ETCD_VERSION)/etcd-v$(ETCD_VERSION)-darwin-amd64.zip | tar -xv -C bin/test ; \
+			mv bin/test/etcd-v$(ETCD_VERSION)-darwin-amd64/etcd bin/test/etcd ; \
+			;; \
+		*) \
+			printf >&2 "unsupported operating system $(shell uname)" ; \
+			exit 1 ; \
+			;; \
+	esac
 	chmod +x bin/test/etcd
 
 bin/migrate: bin/migrate-${MIGRATE_VERSION}
@@ -337,6 +362,23 @@ generate-anchore-client: ## apis/anchore/swagger.yaml ## https://github.com/anch
 	@ sed -i~ 's/whitelist_ids,omitempty/whitelist_ids/' .gen/anchore/model_mapping_rule.go && rm .gen/anchore/model_mapping_rule.go~
 	@ sed -i~ 's/params,omitempty/params/' .gen/anchore/model_policy_rule.go && rm .gen/anchore/model_policy_rule.go~
 	$(call restore_backup_file,.gen/anchore/BUILD.plz)
+
+bin/grype: bin/grype-${GRYPE_VERSION}
+	@ln -sf grype-${GRYPE_VERSION} bin/grype
+bin/grype-${GRYPE_VERSION}:
+	@mkdir -p bin
+	curl -sfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | bash -s -- -b ./bin/ v${GRYPE_VERSION}
+	@mv bin/grype $@
+scan-docker-images: bin/grype
+	@echo "- Start vulnerablity scan for images: $$(cat docker.images.list)"
+	@if [ -z "$${GITHUB_TOKEN}" ]; then \
+		echo "missing required GITHUB_TOKEN environment variable for ghcr.io authentication" ; \
+		exit 1 ; \
+	else \
+		echo $${GITHUB_TOKEN} | docker login ghcr.io --username "dummy" --password-stdin ; \
+	fi
+	@for image in $$(cat docker.images.list); do echo "Scanning image: " $$image; grype $$image; done;
+	@echo "- Scan completed."
 
 .PHONY: list
 list: ## List all make targets

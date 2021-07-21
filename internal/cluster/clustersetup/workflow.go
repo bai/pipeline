@@ -31,6 +31,7 @@ const WorkflowName = "cluster-setup"
 const (
 	DeployClusterAutoscalerActivityName = "deploy-cluster-autoscaler"
 	RestoreBackupActivityName           = "restore-backup"
+	ErrReasonRestoreFailed              = "BACKUP_RESTORE_FAILED"
 )
 
 // Workflow orchestrates the post-creation cluster setup flow.
@@ -40,6 +41,18 @@ type Workflow struct {
 
 	// Drives installation
 	IsIntegratedServicesV2 bool
+
+	// Install additional Pipeline components here
+	PipelineNamespace string
+
+	InstallHelmCharts []HelmChartInstallParams
+}
+
+type HelmChartInstallParams struct {
+	ReleaseName  string
+	ChartName    string
+	ChartVersion string
+	Values       []byte
 }
 
 // WorkflowInput is the input for a cluster setup workflow.
@@ -71,7 +84,6 @@ type Cluster struct {
 	Name         string
 	Distribution string
 	Cloud        string
-	ScaleOptions *pkgCluster.ScaleOptions
 }
 
 // Organization contains information about the organization a cluster belongs to.
@@ -88,10 +100,11 @@ func (w Workflow) Execute(ctx workflow.Context, input WorkflowInput) error {
 		StartToCloseTimeout:    30 * time.Minute,
 		WaitForCancellation:    true,
 		RetryPolicy: &cadence.RetryPolicy{
-			InitialInterval:    2 * time.Second,
-			BackoffCoefficient: 1.5,
-			MaximumInterval:    30 * time.Second,
-			MaximumAttempts:    30,
+			InitialInterval:          2 * time.Second,
+			BackoffCoefficient:       1.5,
+			MaximumInterval:          30 * time.Second,
+			MaximumAttempts:          30,
+			NonRetriableErrorReasons: []string{"cadenceInternal:Panic", ErrReasonRestoreFailed},
 		},
 	}
 	ctx = workflow.WithActivityOptions(ctx, activityOptions)
@@ -180,11 +193,10 @@ func (w Workflow) Execute(ctx workflow.Context, input WorkflowInput) error {
 	}
 	{
 		activityInput := DeployInstanceTerminationHandlerActivityInput{
-			ClusterID:    input.Cluster.ID,
-			OrgID:        input.Organization.ID,
-			Cloud:        input.Cluster.Cloud,
-			ClusterName:  input.Cluster.Name,
-			ScaleOptions: input.Cluster.ScaleOptions,
+			ClusterID:   input.Cluster.ID,
+			OrgID:       input.Organization.ID,
+			Cloud:       input.Cluster.Cloud,
+			ClusterName: input.Cluster.Name,
 		}
 
 		err := workflow.ExecuteActivity(ctx, DeployInstanceTerminationHandlerActivityName, activityInput).Get(ctx, nil)
@@ -199,6 +211,23 @@ func (w Workflow) Execute(ctx workflow.Context, input WorkflowInput) error {
 			input := operator.NewInstallerActivityInput(input.Organization.ID, input.Cluster.ID)
 			if err := workflow.ExecuteActivity(ctx, operator.IntegratedServiceOperatorInstallerActivityName, input).Get(ctx, nil); err != nil {
 				return errors.WrapIfWithDetails(err, "failed to install the  operator", "orgID", input.OrgID, "clusterID", input.ClusterID)
+			}
+		}
+	}
+
+	{
+		for _, chart := range w.InstallHelmCharts {
+			input := HelmInstallActivityInput{
+				ClusterID:    input.Cluster.ID,
+				Namespace:    w.PipelineNamespace,
+				ReleaseName:  chart.ReleaseName,
+				ChartName:    chart.ChartName,
+				ChartVersion: chart.ChartVersion,
+				Values:       chart.Values,
+			}
+
+			if err := workflow.ExecuteActivity(ctx, HelmInstallActivityName, input).Get(ctx, nil); err != nil {
+				return errors.WrapIfWithDetails(err, "cluster setup failed", "clusterID", input.ClusterID)
 			}
 		}
 	}

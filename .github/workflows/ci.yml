@@ -7,8 +7,62 @@ on:
   pull_request:
 
 jobs:
+  check-integrity:
+    name: Check integrity
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Set up Go
+        uses: actions/setup-go@v2
+        with:
+          go-version: 1.16
+
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Set up Please
+        uses: sagikazarmark/setup-please-action@v0
+        with:
+          profile: ci
+
+      - name: Check Go modules dependency file integrity
+        if: ${{ always() }}
+        run: |
+          exit_code=0
+          for module_file in $(find . -type d -path "./plz-out**" -prune -a -not -type d -name "./plz-out" -o -type f -name go.mod); do
+            cd "$(dirname ${module_file})"
+            go mod tidy
+            if [ "$(git status --porcelain)" != "" ]; then
+              printf >&2 '\n`go mod tidy` in module `%s` results in a dirty state, Go mod files are not in sync with the source code files, differences:\n\n%s\n\n' "$(go list -m)" "$(git diff)"
+              git reset --hard
+              exit_code=1
+            fi
+          done
+          exit ${exit_code}
+
+      - name: Check Please Go dependency file integrity
+        if: ${{ always() }}
+        run: |
+          plz tidy
+          if [ "$(git status --porcelain)" != "" ]; then
+            printf >&2 '\n`plz tidy` results in a dirty state, Please build files are not in sync with the source code files, differences:\n\n%s\n\n' "$(git diff)"
+            git reset --hard
+            exit 1
+          fi
+
+      - name: Check generated file integrity
+        if: ${{ always() }}
+        run: |
+          make generate-all
+          if [ "$(git status --porcelain)" != "" ]; then
+            printf >&2 '\n`make generate-all` results in a dirty state, generated files are not in sync with the source code files, differences:\n\n%s\n\n' "$(git diff)"
+            git reset --hard
+            exit 1
+          fi
+
   build:
     name: Build
+    needs: [check-integrity]
     runs-on: ubuntu-latest
 
     services:
@@ -25,7 +79,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v2
         with:
-          go-version: 1.15
+          go-version: 1.16
 
       - name: Checkout code
         uses: actions/checkout@v2
@@ -58,7 +112,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v2
         with:
-          go-version: 1.15
+          go-version: 1.16
 
       - name: Checkout code
         uses: actions/checkout@v2
@@ -99,6 +153,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v2
 
+      - name: Set up Go
+        uses: actions/setup-go@v2
+        with:
+          go-version: 1.16
+
       - name: Set up Please
         uses: sagikazarmark/setup-please-action@v0
         with:
@@ -137,7 +196,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v2
         with:
-          go-version: 1.15
+          go-version: 1.16
 
       - name: Checkout code
         uses: actions/checkout@v2

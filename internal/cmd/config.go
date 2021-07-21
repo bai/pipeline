@@ -35,6 +35,7 @@ import (
 	"github.com/banzaicloud/pipeline/internal/platform/database"
 	"github.com/banzaicloud/pipeline/internal/platform/log"
 	"github.com/banzaicloud/pipeline/pkg/cluster"
+	"github.com/banzaicloud/pipeline/pkg/values"
 )
 
 type Config struct {
@@ -72,6 +73,7 @@ type Config struct {
 			SSH                   struct {
 				Generate bool
 			}
+			EnableAddons bool
 		}
 
 		PKE struct {
@@ -85,11 +87,6 @@ type Config struct {
 	}
 
 	Helm helm.Config
-
-	Hollowtrees struct {
-		Endpoint        string
-		TokenSigningKey string
-	}
 
 	Kubernetes struct {
 		Client struct {
@@ -222,6 +219,8 @@ type ClusterConfig struct {
 	SecurityScan ClusterSecurityScanConfig
 
 	Vault ClusterVaultConfig
+
+	Charts ClusterChartConfigs
 }
 
 // Validate validates the configuration.
@@ -460,6 +459,50 @@ func (c ClusterVaultConfig) Validate() error {
 	}
 
 	return errs
+}
+
+// ClusterChartConfig contains configuration for a chart to be installed.
+type ClusterChartConfig struct {
+	Enabled bool
+
+	ChartName    string
+	ChartVersion string
+	Values       values.Config
+
+	ReleaseName string
+}
+
+func (c ClusterChartConfig) Validate() error {
+	var err error
+
+	if c.Enabled {
+		if c.ChartName == "" {
+			err = errors.Append(err, errors.New("cluster chart: chart name is required"))
+		}
+
+		if c.ChartVersion == "" {
+			err = errors.Append(err, errors.New("cluster chart: chart version is required"))
+		}
+
+		if c.ReleaseName == "" {
+			err = errors.Append(err, errors.New("cluster chart: release name is required"))
+		}
+	}
+
+	return err
+}
+
+// ClusterChartConfigs contains configuration for charts to be installed.
+type ClusterChartConfigs []ClusterChartConfig
+
+func (c ClusterChartConfigs) Validate() error {
+	var err error
+
+	for _, config := range c {
+		err = errors.Append(err, config.Validate())
+	}
+
+	return err
 }
 
 // TelemetryConfig contains telemetry configuration.
@@ -768,25 +811,27 @@ traefik:
 	v.SetDefault("cluster::disasterRecovery::charts::ark::values", map[string]interface{}{
 		"image": map[string]interface{}{
 			"repository": "velero/velero",
-			"tag":        "v1.5.1",
+			"tag":        "v1.6.0",
 			"pullPolicy": "IfNotPresent",
 		},
 		"awsPluginImage": map[string]interface{}{
 			"repository": "velero/velero-plugin-for-aws",
-			"tag":        "v1.1.0",
+			"tag":        "v1.2.0",
 			"pullPolicy": "IfNotPresent",
 		},
 		"azurePluginImage": map[string]interface{}{
 			"repository": "velero/velero-plugin-for-microsoft-azure",
-			"tag":        "v1.1.0",
+			"tag":        "v1.2.0",
 			"pullPolicy": "IfNotPresent",
 		},
 		"gcpPluginImage": map[string]interface{}{
 			"repository": "velero/velero-plugin-for-gcp",
-			"tag":        "v1.1.0",
+			"tag":        "v1.2.0",
 			"pullPolicy": "IfNotPresent",
 		},
 	})
+
+	v.SetDefault("cluster::charts", nil)
 
 	// Helm configuration
 	v.SetDefault("helm::home", "./var/cache")
@@ -808,8 +853,6 @@ traefik:
 	v.SetDefault("distribution::pke::amazon::defaultNetworkProvider", "cilium")
 
 	v.SetDefault("cloudinfo::endpoint", "")
-	v.SetDefault("hollowtrees::endpoint", "")
-	v.SetDefault("hollowtrees::tokenSigningKey", "")
 
 	v.SetDefault("secret::tls::defaultValidity", "8760h") // 1 year
 

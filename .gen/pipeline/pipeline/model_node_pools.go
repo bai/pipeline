@@ -10,19 +10,8 @@
 
 package pipeline
 
-type ScaleOptions struct {
+// NodePools - An associative collection of node pool objects keyed by their name.
+type NodePools struct {
 
-	Enabled bool `json:"enabled"`
-
-	DesiredCpu float64 `json:"desiredCpu,omitempty"`
-
-	DesiredMem float64 `json:"desiredMem,omitempty"`
-
-	DesiredGpu int32 `json:"desiredGpu,omitempty"`
-
-	OnDemandPct int32 `json:"onDemandPct,omitempty"`
-
-	Excludes []string `json:"excludes,omitempty"`
-
-	KeepDesiredCapacity bool `json:"keepDesiredCapacity,omitempty"`
+	NodePools map[string]NodePool `json:"nodePools,omitempty"`
 }

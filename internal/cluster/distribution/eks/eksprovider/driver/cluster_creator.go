@@ -166,7 +166,6 @@ func (c *EksClusterCreator) create(ctx context.Context, logger logrus.FieldLogge
 		},
 		PostHooks:        createRequest.PostHooks,
 		OrganizationName: org.Name,
-		ScaleOptions:     commonCluster.GetScaleOptions(),
 	}
 
 	encryptionConfig := make([]workflow.EncryptionConfig, 0, len(eksCluster.EncryptionConfig))
@@ -228,6 +227,7 @@ func (c *EksClusterCreator) create(ctx context.Context, logger logrus.FieldLogge
 				MaxSize: requestedNodePool.MaxCount,
 			},
 			VolumeSize:       requestedNodePool.VolumeSize,
+			VolumeType:       requestedNodePool.VolumeType,
 			InstanceType:     requestedNodePool.InstanceType,
 			Image:            requestedNodePool.Image,
 			SpotPrice:        requestedNodePool.SpotPrice,

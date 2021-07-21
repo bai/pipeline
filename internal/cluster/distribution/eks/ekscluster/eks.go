@@ -121,6 +121,7 @@ type NodePool struct {
 	Count            int                       `json:"count" yaml:"count"`
 	VolumeEncryption *NodePoolVolumeEncryption `json:"volumeEncryption,omitempty" yaml:"volumeEncryption,omitempty"`
 	VolumeSize       int                       `json:"volumeSize" yaml:"volumeSize"`
+	VolumeType       string                    `json:"volumeType" yaml:"volumeType"`
 	Image            string                    `json:"image" yaml:"image"`
 	Labels           map[string]string         `json:"labels,omitempty" yaml:"labels,omitempty"`
 
@@ -380,7 +381,7 @@ func (eks *UpdateClusterAmazonEKS) Validate() error {
 
 // isValidVersion validates the given K8S version
 func isValidVersion(version string) (bool, error) {
-	constraint, err := semver.NewConstraint(">= 1.15, <= 1.19")
+	constraint, err := semver.NewConstraint(">= 1.16, <= 1.20")
 	if err != nil {
 		return false, errors.WrapIf(err, "couldn't create semver Kubernetes version check constraint")
 	}

@@ -17158,7 +17158,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/NodePool'
+              $ref: '#/components/schemas/CreateNodePoolRequest'
         required: true
       responses:
         "202":
@@ -18517,8 +18517,6 @@ components:
           example:
             InstallIngressController: null
           type: object
-        scaleOptions:
-          $ref: '#/components/schemas/ScaleOptions'
         properties:
           example:
             gke:
@@ -18550,41 +18548,11 @@ components:
         sshSecretId:
           example: 62bc3c75-91fb-4670-bad4-24b401a9deac
           type: string
-        scaleOptions:
-          $ref: '#/components/schemas/ScaleOptions'
         type:
           type: string
       required:
       - name
       - type
-      type: object
-    ScaleOptions:
-      properties:
-        enabled:
-          type: boolean
-        desiredCpu:
-          format: double
-          minimum: 1
-          type: number
-        desiredMem:
-          format: double
-          minimum: 1
-          type: number
-        desiredGpu:
-          minimum: 0
-          type: integer
-        onDemandPct:
-          maximum: 100
-          minimum: 0
-          type: integer
-        excludes:
-          items:
-            type: string
-          type: array
-        keepDesiredCapacity:
-          type: boolean
-      required:
-      - enabled
       type: object
     CreatePKEClusterKubernetes:
       properties:
@@ -18773,10 +18741,22 @@ components:
       allOf:
       - $ref: '#/components/schemas/CreateClusterRequestBase'
       - $ref: '#/components/schemas/CreateClusterRequestBase'
+    CreateNodePoolRequest:
+      oneOf:
+      - $ref: '#/components/schemas/NodePool'
+      - $ref: '#/components/schemas/NodePools'
     NodePool:
       oneOf:
       - $ref: '#/components/schemas/EksNodePool'
       - $ref: '#/components/schemas/EksNodePool'
+    NodePools:
+      description: An associative collection of node pool objects keyed by their name.
+      properties:
+        nodePools:
+          additionalProperties:
+            $ref: '#/components/schemas/NodePool'
+          type: object
+      type: object
     GenericNodePool:
       description: Generic node pool object for all cluster distributions.
       properties:
@@ -23028,6 +23008,10 @@ components:
           description: Size of the EBS volume in GBs of the nodes in the pool.
           example: 50
           type: integer
+        volumeType:
+          description: Type of the EBS volume of the nodes in the pool (default gp3).
+          example: gp3
+          type: string
         instanceType:
           description: Machine instance type.
           example: m4.xlarge
@@ -23072,6 +23056,10 @@ components:
           description: Size of the EBS volume in GBs of the nodes in the pool.
           example: 50
           type: integer
+        volumeType:
+          description: Type of the EBS volume of the nodes in the pool (default gp3).
+          example: gp3
+          type: string
         instanceType:
           description: The instance type to use for your node pool.
           example: m4.xlarge
@@ -23534,6 +23522,7 @@ components:
           type: array
         sizeBytes:
           example: 286572743
+          format: int64
           type: integer
     NodeItem_status:
       example:
